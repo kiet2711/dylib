@@ -7,28 +7,26 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode Developer Directory
-        run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-          xcrun --sdk iphoneos --show-sdk-path
-
       - name: Compile EasyComixGemini.dylib
         run: |
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "Building with iOS SDK: $SDK_PATH"
+          echo "Building with iOS SDK at: $SDK_PATH"
           
-          clang -dynamiclib -target arm64-apple-ios14.0 \
+          clang -dynamiclib \
+            -arch arm64 \
             -isysroot "$SDK_PATH" \
+            -miphoneos-version-min=14.0 \
             -fobjc-arc \
             -framework Foundation \
             -framework UIKit \
             -framework Security \
+            -install_name @rpath/EasyComixGemini.dylib \
             EasyComixGemini.m \
             -o EasyComixGemini.dylib
           

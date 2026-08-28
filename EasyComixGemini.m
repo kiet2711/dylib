@@ -20,17 +20,16 @@ static NSUInteger sCurrentKeyIndex = 0;
 
 static NSArray<NSString *> *GetGeminiKeyPool(void) {
     NSString *rawKeys = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiKeysPref];
-    if (!rawKeys || rawKeys.length == 0) {
-        return @[];
+    if (!rawKeys || [rawKeys length] == 0) {
+        return [NSArray array];
     }
     
-    // Tách theo dòng mới hoặc dấu phẩy
     NSArray *components = [rawKeys componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\n,"]];
     NSMutableArray *validKeys = [NSMutableArray array];
     
     for (NSString *k in components) {
         NSString *trimmed = [k stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if (trimmed.length > 0) {
+        if ([trimmed length] > 0) {
             [validKeys addObject:trimmed];
         }
     }
@@ -39,22 +38,22 @@ static NSArray<NSString *> *GetGeminiKeyPool(void) {
 
 static NSString *GetActiveGeminiKey(void) {
     NSArray *keys = GetGeminiKeyPool();
-    if (keys.count == 0) return @"";
-    return keys[sCurrentKeyIndex % keys.count];
+    if ([keys count] == 0) return @"";
+    return keys[sCurrentKeyIndex % [keys count]];
 }
 
 static void RotateToNextKey(void) {
     NSArray *keys = GetGeminiKeyPool();
-    if (keys.count > 1) {
-        sCurrentKeyIndex = (sCurrentKeyIndex + 1) % keys.count;
-        LOG(@"Đã tự động xoay sang Key #%lu/%lu", (unsigned long)(sCurrentKeyIndex + 1), (unsigned long)keys.count);
+    if ([keys count] > 1) {
+        sCurrentKeyIndex = (sCurrentKeyIndex + 1) % [keys count];
+        LOG(@"Đã tự động xoay sang Key #%lu/%lu", (unsigned long)(sCurrentKeyIndex + 1), (unsigned long)[keys count]);
     }
 }
 
 static NSString *GetSavedGeminiModel(void) {
     NSString *model = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiModelPref];
-    if (!model || model.length == 0) {
-        return @"gemini-2.5-flash-lite"; // Mặc định chuẩn mới
+    if (!model || [model length] == 0) {
+        return @"gemini-2.5-flash-lite";
     }
     return [model stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
@@ -67,7 +66,7 @@ static void ShowGeminiSettingsPopup(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *keyWindow = nil;
         for (UIWindow *w in [UIApplication sharedApplication].windows) {
-            if (w.isKeyWindow) {
+            if ([w isKeyWindow]) {
                 keyWindow = w;
                 break;
             }
@@ -80,7 +79,7 @@ static void ShowGeminiSettingsPopup(void) {
         
         NSArray *currentKeys = GetGeminiKeyPool();
         NSString *currentKeysText = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiKeysPref] ?: @"";
-        NSString *message = [NSString stringWithFormat:@"Đang có %lu Key trong Pool.\n(Dán nhiều Key, mỗi dòng 1 Key để tự động đổi khi hết hạn mức)", (unsigned long)currentKeys.count];
+        NSString *message = [NSString stringWithFormat:@"Đang có %lu Key trong Pool.\n(Dán nhiều Key, mỗi dòng 1 Key để tự động xoay khi hết hạn mức)", (unsigned long)[currentKeys count]];
         
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🤖 Gemini Key Pool & Model"
                                                                        message:message
@@ -107,14 +106,14 @@ static void ShowGeminiSettingsPopup(void) {
             if (newKeys) {
                 [[NSUserDefaults standardUserDefaults] setObject:[newKeys stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] forKey:kGeminiKeysPref];
             }
-            if (newModel && newModel.length > 0) {
+            if (newModel && [newModel length] > 0) {
                 [[NSUserDefaults standardUserDefaults] setObject:[newModel stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] forKey:kGeminiModelPref];
             } else {
                 [[NSUserDefaults standardUserDefaults] setObject:@"gemini-2.5-flash-lite" forKey:kGeminiModelPref];
             }
             [[NSUserDefaults standardUserDefaults] synchronize];
             sCurrentKeyIndex = 0;
-            LOG(@"Đã cập nhật cấu hình: %lu keys, Model: %@", (unsigned long)GetGeminiKeyPool().count, GetSavedGeminiModel());
+            LOG(@"Đã cập nhật cấu hình: %lu keys, Model: %@", (unsigned long)[GetGeminiKeyPool() count], GetSavedGeminiModel());
         }];
         
         UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Đóng"
@@ -172,7 +171,7 @@ static void AddFloatingButtonToWindow(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIWindow *keyWindow = nil;
             for (UIWindow *w in [UIApplication sharedApplication].windows) {
-                if (w.isKeyWindow) {
+                if ([w isKeyWindow]) {
                     keyWindow = w;
                     break;
                 }
@@ -183,7 +182,7 @@ static void AddFloatingButtonToWindow(void) {
                 [keyWindow addSubview:btn];
                 [keyWindow bringSubviewToFront:btn];
                 
-                if (GetGeminiKeyPool().count == 0) {
+                if ([GetGeminiKeyPool() count] == 0) {
                     ShowGeminiSettingsPopup();
                 }
             }
@@ -197,6 +196,12 @@ static void AddFloatingButtonToWindow(void) {
 
 @interface EasyComixURLProtocol : NSURLProtocol <NSURLSessionDataDelegate>
 @property (nonatomic, strong) NSURLSessionDataTask *task;
+@end
+
+@interface EasyComixURLProtocol ()
+- (void)executeGeminiRequestWithTexts:(NSArray *)texts sourceLang:(NSString *)srcLang targetLang:(NSString *)tgtLang attemptNo:(NSUInteger)attempt maxTries:(NSUInteger)maxTries;
+- (void)sendJsonResponse:(NSDictionary *)jsonDict statusCode:(NSInteger)code;
+- (NSData *)readDataFromStream:(NSInputStream *)stream;
 @end
 
 @implementation EasyComixURLProtocol
@@ -261,26 +266,25 @@ static void AddFloatingButtonToWindow(void) {
         NSString *srcLang = bodyJson[@"sourceLanguage"] ?: @"auto";
         NSString *tgtLang = bodyJson[@"targetLanguage"] ?: @"vi";
         
-        if (!texts || texts.count == 0) {
+        if (!texts || [texts count] == 0) {
             NSDictionary *emptyResp = @{@"success": @YES, @"data": @{@"translations": @[]}, @"meta": @{@"quota": @{@"tier": @"free", @"remaining": @999999, @"resetAt": @"2099-01-01T00:00:00.000Z"}}};
             [self sendJsonResponse:emptyResp statusCode:200];
             return;
         }
         
         NSArray *keyPool = GetGeminiKeyPool();
-        if (keyPool.count == 0) {
+        if ([keyPool count] == 0) {
             ShowGeminiSettingsPopup();
             NSDictionary *resp = @{@"success": @YES, @"data": @{@"translations": texts}, @"meta": @{@"quota": @{@"tier": @"free", @"remaining": @999999, @"resetAt": @"2099-01-01T00:00:00.000Z"}}};
             [self sendJsonResponse:resp statusCode:200];
             return;
         }
         
-        // Bắt đầu gọi Gemini với cơ chế tự động thử lại bằng Key tiếp theo nếu lỗi
         [self executeGeminiRequestWithTexts:texts
                                  sourceLang:srcLang
                                  targetLang:tgtLang
                                   attemptNo:0
-                                   maxTries:keyPool.count];
+                                   maxTries:[keyPool count]];
     }
 }
 
@@ -340,7 +344,6 @@ static void AddFloatingButtonToWindow(void) {
         
         BOOL isKeyError = (statusCode == 429 || statusCode == 400 || statusCode == 401 || statusCode == 403);
         
-        // Nếu gặp lỗi Key (429 Rate Limit / 403 Expired) và còn Key khác trong Pool -> Tự động xoay sang Key kế tiếp
         if ((isKeyError || netError) && attempt < maxTries - 1) {
             LOG(@"Key hiện tại bị lỗi (HTTP %ld). Đang tự động chuyển sang Key tiếp theo...", (long)statusCode);
             RotateToNextKey();
@@ -364,7 +367,7 @@ static void AddFloatingButtonToWindow(void) {
                     cleanText = [cleanText substringFromIndex:3];
                 }
                 if ([cleanText hasSuffix:@"```"]) {
-                    cleanText = [cleanText substringToIndex:cleanText.length - 3];
+                    cleanText = [cleanText substringToIndex:[cleanText length] - 3];
                 }
                 cleanText = [cleanText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                 
@@ -376,7 +379,7 @@ static void AddFloatingButtonToWindow(void) {
             }
         }
         
-        if (!translatedList || translatedList.count == 0) {
+        if (!translatedList || [translatedList count] == 0) {
             translatedList = texts;
         }
         
