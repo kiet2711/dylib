@@ -3,33 +3,64 @@
 #import <objc/runtime.h>
 
 /**
- * EasyComix Gemini Tweak (Dylib) with Settings Popup & Floating Button
- * Tự động chặn toàn bộ request dịch và quota của EasyComix và chuyển hướng sang Google Gemini API.
+ * EasyComix Gemini Tweak (Dylib) - Phiên bản Key Pool & Modern Models
+ * Tự động xoay vòng đa API Key (Key Rotation khi gặp lỗi 429/403)
+ * Hỗ trợ các Model mới: gemini-2.5-flash-lite (mặc định), gemini-3.5-flash-lite, gemini-2.5-flash, gemini-3.6-flash, gemini-3.7-flash
  */
 
 #define LOG(fmt, ...) NSLog(@"[EasyComixGemini] " fmt, ##__VA_ARGS__)
 
-static NSString *const kGeminiKeyPref   = @"EasyComix_Gemini_API_Key";
+static NSString *const kGeminiKeysPref  = @"EasyComix_Gemini_Key_Pool";
 static NSString *const kGeminiModelPref = @"EasyComix_Gemini_Model_Name";
+static NSUInteger sCurrentKeyIndex = 0;
 
-static NSString *GetSavedGeminiKey(void) {
-    NSString *key = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiKeyPref];
-    if (!key || key.length == 0) {
-        return @"";
+// =========================================================================
+// QUẢN LÝ KEY POOL (XOAY VÒNG KEY TỰ ĐỘNG)
+// =========================================================================
+
+static NSArray<NSString *> *GetGeminiKeyPool(void) {
+    NSString *rawKeys = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiKeysPref];
+    if (!rawKeys || rawKeys.length == 0) {
+        return @[];
     }
-    return [key stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    
+    // Tách theo dòng mới hoặc dấu phẩy
+    NSArray *components = [rawKeys componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\n,"]];
+    NSMutableArray *validKeys = [NSMutableArray array];
+    
+    for (NSString *k in components) {
+        NSString *trimmed = [k stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (trimmed.length > 0) {
+            [validKeys addObject:trimmed];
+        }
+    }
+    return validKeys;
+}
+
+static NSString *GetActiveGeminiKey(void) {
+    NSArray *keys = GetGeminiKeyPool();
+    if (keys.count == 0) return @"";
+    return keys[sCurrentKeyIndex % keys.count];
+}
+
+static void RotateToNextKey(void) {
+    NSArray *keys = GetGeminiKeyPool();
+    if (keys.count > 1) {
+        sCurrentKeyIndex = (sCurrentKeyIndex + 1) % keys.count;
+        LOG(@"Đã tự động xoay sang Key #%lu/%lu", (unsigned long)(sCurrentKeyIndex + 1), (unsigned long)keys.count);
+    }
 }
 
 static NSString *GetSavedGeminiModel(void) {
     NSString *model = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiModelPref];
     if (!model || model.length == 0) {
-        return @"gemini-1.5-flash";
+        return @"gemini-2.5-flash-lite"; // Mặc định chuẩn mới
     }
     return [model stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
 // =========================================================================
-// GIAO DIỆN CÀI ĐẶT: POPUP NHẬP KEY & NÚT NỔI (FLOATING BUTTON)
+// GIAO DIỆN CÀI ĐẶT: POPUP NHẬP NHIỀU KEY & NÚT NỔI
 // =========================================================================
 
 static void ShowGeminiSettingsPopup(void) {
@@ -47,18 +78,22 @@ static void ShowGeminiSettingsPopup(void) {
             topVC = topVC.presentedViewController;
         }
         
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🤖 Cài đặt Gemini API"
-                                                                       message:@"Nhập Google Gemini API Key để dịch truyện không giới hạn:"
+        NSArray *currentKeys = GetGeminiKeyPool();
+        NSString *currentKeysText = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiKeysPref] ?: @"";
+        NSString *message = [NSString stringWithFormat:@"Đang có %lu Key trong Pool.\n(Dán nhiều Key, mỗi dòng 1 Key để tự động đổi khi hết hạn mức)", (unsigned long)currentKeys.count];
+        
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🤖 Gemini Key Pool & Model"
+                                                                       message:message
                                                                 preferredStyle:UIAlertControllerStyleAlert];
         
         [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-            textField.placeholder = @"Dán Gemini API Key vào đây...";
-            textField.text = GetSavedGeminiKey();
+            textField.placeholder = @"Dán danh sách API Key (mỗi dòng 1 key)...";
+            textField.text = currentKeysText;
             textField.clearButtonMode = UITextFieldViewModeWhileEditing;
         }];
         
         [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-            textField.placeholder = @"Tên Model (mặc định: gemini-1.5-flash)";
+            textField.placeholder = @"Model: gemini-2.5-flash-lite (mặc định)";
             textField.text = GetSavedGeminiModel();
             textField.clearButtonMode = UITextFieldViewModeWhileEditing;
         }];
@@ -66,19 +101,20 @@ static void ShowGeminiSettingsPopup(void) {
         UIAlertAction *saveAction = [UIAlertAction actionWithTitle:@"Lưu Cấu Hình"
                                                              style:UIAlertActionStyleDefault
                                                            handler:^(UIAlertAction * _Nonnull action) {
-            NSString *newKey = alert.textFields[0].text;
+            NSString *newKeys = alert.textFields[0].text;
             NSString *newModel = alert.textFields[1].text;
             
-            if (newKey) {
-                [[NSUserDefaults standardUserDefaults] setObject:[newKey stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] forKey:kGeminiKeyPref];
+            if (newKeys) {
+                [[NSUserDefaults standardUserDefaults] setObject:[newKeys stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] forKey:kGeminiKeysPref];
             }
             if (newModel && newModel.length > 0) {
                 [[NSUserDefaults standardUserDefaults] setObject:[newModel stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] forKey:kGeminiModelPref];
             } else {
-                [[NSUserDefaults standardUserDefaults] setObject:@"gemini-1.5-flash" forKey:kGeminiModelPref];
+                [[NSUserDefaults standardUserDefaults] setObject:@"gemini-2.5-flash-lite" forKey:kGeminiModelPref];
             }
             [[NSUserDefaults standardUserDefaults] synchronize];
-            LOG(@"Đã lưu API Key mới: %@", GetSavedGeminiKey());
+            sCurrentKeyIndex = 0;
+            LOG(@"Đã cập nhật cấu hình: %lu keys, Model: %@", (unsigned long)GetGeminiKeyPool().count, GetSavedGeminiModel());
         }];
         
         UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Đóng"
@@ -92,7 +128,7 @@ static void ShowGeminiSettingsPopup(void) {
     });
 }
 
-// Nút nổi để người dùng có thể bấm vào đổi key bất kỳ lúc nào
+// Nút nổi kéo thả trên màn hình
 @interface GeminiFloatingButton : UIButton
 @end
 
@@ -100,7 +136,7 @@ static void ShowGeminiSettingsPopup(void) {
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (self = [super initWithFrame:frame]) {
-        self.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:1.0 alpha:0.85];
+        self.backgroundColor = [UIColor colorWithRed:0.1 green:0.55 blue:1.0 alpha:0.9];
         [self setTitle:@"🤖 Key" forState:UIControlStateNormal];
         self.titleLabel.font = [UIFont boldSystemFontOfSize:13];
         self.layer.cornerRadius = frame.size.width / 2.0;
@@ -147,8 +183,7 @@ static void AddFloatingButtonToWindow(void) {
                 [keyWindow addSubview:btn];
                 [keyWindow bringSubviewToFront:btn];
                 
-                // Nếu chưa có key thì hiện popup nhắc nhập key ngay lần đầu mở app
-                if (GetSavedGeminiKey().length == 0) {
+                if (GetGeminiKeyPool().count == 0) {
                     ShowGeminiSettingsPopup();
                 }
             }
@@ -157,7 +192,7 @@ static void AddFloatingButtonToWindow(void) {
 }
 
 // =========================================================================
-// XỬ LÝ CHẶN MẠNG & DỊCH THUẬT BẰNG GEMINI API
+// XỬ LÝ CHẶN MẠNG & DỊCH THUẬT VỚI CƠ CHẾ XOAY VÒNG KEY
 // =========================================================================
 
 @interface EasyComixURLProtocol : NSURLProtocol <NSURLSessionDataDelegate>
@@ -193,7 +228,7 @@ static void AddFloatingButtonToWindow(void) {
     NSString *urlString = self.request.URL.absoluteString;
     LOG(@"Interception: %@", urlString);
     
-    // 1. Endpoint Quota -> Trả về hợp lệ với tier 'free' để không bị lỗi decode Enum
+    // 1. Quota Endpoint -> Trả về hạn mức 999,999 với tier 'free'
     if ([urlString containsString:@"/quota"]) {
         NSDictionary *fakeQuota = @{
             @"success": @YES,
@@ -207,7 +242,7 @@ static void AddFloatingButtonToWindow(void) {
         return;
     }
     
-    // 2. Endpoint Dịch thuật
+    // 2. Translation Endpoint
     if ([urlString containsString:@"/translate"]) {
         NSData *bodyData = self.request.HTTPBody;
         if (!bodyData && self.request.HTTPBodyStream) {
@@ -232,17 +267,20 @@ static void AddFloatingButtonToWindow(void) {
             return;
         }
         
-        // Kiểm tra xem đã có API Key chưa
-        NSString *apiKey = GetSavedGeminiKey();
-        if (apiKey.length == 0) {
+        NSArray *keyPool = GetGeminiKeyPool();
+        if (keyPool.count == 0) {
             ShowGeminiSettingsPopup();
-            // Trả về text gốc tạm thời
             NSDictionary *resp = @{@"success": @YES, @"data": @{@"translations": texts}, @"meta": @{@"quota": @{@"tier": @"free", @"remaining": @999999, @"resetAt": @"2099-01-01T00:00:00.000Z"}}};
             [self sendJsonResponse:resp statusCode:200];
             return;
         }
         
-        [self callGeminiWithTexts:texts sourceLang:srcLang targetLang:tgtLang apiKey:apiKey];
+        // Bắt đầu gọi Gemini với cơ chế tự động thử lại bằng Key tiếp theo nếu lỗi
+        [self executeGeminiRequestWithTexts:texts
+                                 sourceLang:srcLang
+                                 targetLang:tgtLang
+                                  attemptNo:0
+                                   maxTries:keyPool.count];
     }
 }
 
@@ -250,9 +288,15 @@ static void AddFloatingButtonToWindow(void) {
     [self.task cancel];
 }
 
-#pragma mark - Gọi Gemini API
+#pragma mark - Thực thi Gemini với Key Rotation
 
-- (void)callGeminiWithTexts:(NSArray *)texts sourceLang:(NSString *)srcLang targetLang:(NSString *)tgtLang apiKey:(NSString *)apiKey {
+- (void)executeGeminiRequestWithTexts:(NSArray *)texts
+                           sourceLang:(NSString *)srcLang
+                           targetLang:(NSString *)tgtLang
+                            attemptNo:(NSUInteger)attempt
+                             maxTries:(NSUInteger)maxTries {
+    
+    NSString *currentKey = GetActiveGeminiKey();
     NSString *model = GetSavedGeminiModel();
     
     NSError *error;
@@ -263,7 +307,7 @@ static void AddFloatingButtonToWindow(void) {
         @"Bạn là dịch giả truyện tranh (Manga/Manhwa/Comic) chuyên nghiệp.\n"
         @"Hãy dịch danh sách các câu thoại sau từ ngôn ngữ '%@' sang '%@'.\n"
         @"Quy tắc:\n"
-        @"- Dịch mượt mà, cảm xúc tự nhiên, đúng ngữ cảnh truyện tranh.\n"
+        @"- Dịch mượt mà, cảm xúc tự nhiên, đúng ngữ cảnh thoại truyện tranh.\n"
         @"- Trả về DUY NHẤT một JSON Array mảng chuỗi theo đúng thứ tự (ví dụ: [\"câu 1\", \"câu 2\"]).\n"
         @"- KHÔNG thêm bất kỳ markdown hoặc giải thích nào.\n\n"
         @"Danh sách:\n%@", srcLang, tgtLang, textsJsonString];
@@ -279,7 +323,7 @@ static void AddFloatingButtonToWindow(void) {
     
     NSString *geminiEndpoint = [NSString stringWithFormat:
         @"https://generativelanguage.googleapis.com/v1beta/models/%@:generateContent?key=%@",
-        model, apiKey];
+        model, currentKey];
     
     NSMutableURLRequest *geminiReq = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:geminiEndpoint]];
     [geminiReq setHTTPMethod:@"POST"];
@@ -291,12 +335,28 @@ static void AddFloatingButtonToWindow(void) {
     NSURLSession *session = [NSURLSession sessionWithConfiguration:config];
     
     [[session dataTaskWithRequest:geminiReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *netError) {
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        NSInteger statusCode = httpResponse.statusCode;
+        
+        BOOL isKeyError = (statusCode == 429 || statusCode == 400 || statusCode == 401 || statusCode == 403);
+        
+        // Nếu gặp lỗi Key (429 Rate Limit / 403 Expired) và còn Key khác trong Pool -> Tự động xoay sang Key kế tiếp
+        if ((isKeyError || netError) && attempt < maxTries - 1) {
+            LOG(@"Key hiện tại bị lỗi (HTTP %ld). Đang tự động chuyển sang Key tiếp theo...", (long)statusCode);
+            RotateToNextKey();
+            [self executeGeminiRequestWithTexts:texts
+                                     sourceLang:srcLang
+                                     targetLang:tgtLang
+                                      attemptNo:attempt + 1
+                                       maxTries:maxTries];
+            return;
+        }
+        
         NSArray *translatedList = nil;
-        if (!netError && data) {
+        if (!netError && data && statusCode == 200) {
             NSDictionary *geminiRes = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
             NSString *rawText = geminiRes[@"candidates"][0][@"content"][@"parts"][0][@"text"];
             if (rawText) {
-                // Xử lý loại bỏ markdown ```json nếu có
                 NSString *cleanText = [rawText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                 if ([cleanText hasPrefix:@"```json"]) {
                     cleanText = [cleanText substringFromIndex:7];
@@ -316,12 +376,10 @@ static void AddFloatingButtonToWindow(void) {
             }
         }
         
-        // Nếu lỗi Gemini thì giữ nguyên text gốc để không bị crash giao diện
         if (!translatedList || translatedList.count == 0) {
             translatedList = texts;
         }
         
-        // Đóng gói JSON chuẩn 100% theo đúng cấu trúc EasyComix
         NSDictionary *finalResponse = @{
             @"success": @YES,
             @"data": @{
@@ -411,7 +469,6 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
 
 @end
 
-// Hook UIViewController viewDidAppear để gắn nút cài đặt vào màn hình
 @interface UIViewController (EasyComixHook)
 @end
 
@@ -426,7 +483,7 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
 
 __attribute__((constructor))
 static void InitEasyComixGeminiHook(void) {
-    LOG(@"EasyComix Gemini Hook Loaded successfully with Settings UI!");
+    LOG(@"EasyComix Gemini Hook Loaded with Key Pool & Modern Models!");
     
     [NSURLProtocol registerClass:[EasyComixURLProtocol class]];
     
