@@ -6,7 +6,8 @@
 /**
  * EasyComix Gemini Tweak (Dylib) - Direct NSURLSession Swizzling
  * Bắt trực tiếp HTTPBody không qua NSURLProtocol (tránh lỗi nil body của iOS)
- * Tự động xoay vòng đa API Key (Key Rotation) & Tự động thử lại Model thay thế
+ * Tự động xoay vòng đa API Key (Key Rotation)
+ * Mặc định: gemini-3.5-flash-lite
  */
 
 #define LOG(fmt, ...) NSLog(@"[EasyComixGemini] " fmt, ##__VA_ARGS__)
@@ -54,7 +55,7 @@ static void RotateToNextKey(void) {
 static NSString *GetSavedGeminiModel(void) {
     NSString *model = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiModelPref];
     if (!model || [model length] == 0) {
-        return @"gemini-2.5-flash"; // Model phổ biến & ổn định nhất
+        return @"gemini-3.5-flash-lite"; // Mặc định chuyển sang gemini-3.5-flash-lite
     }
     return [model stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
@@ -93,7 +94,7 @@ static void ShowGeminiSettingsPopup(void) {
         }];
         
         [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-            textField.placeholder = @"Model: gemini-2.5-flash (hoặc gemini-2.5-flash-lite)";
+            textField.placeholder = @"Model: gemini-3.5-flash-lite (mặc định)";
             textField.text = GetSavedGeminiModel();
             textField.clearButtonMode = UITextFieldViewModeWhileEditing;
         }];
@@ -110,7 +111,7 @@ static void ShowGeminiSettingsPopup(void) {
             if (newModel && [newModel length] > 0) {
                 [[NSUserDefaults standardUserDefaults] setObject:[newModel stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] forKey:kGeminiModelPref];
             } else {
-                [[NSUserDefaults standardUserDefaults] setObject:@"gemini-2.5-flash" forKey:kGeminiModelPref];
+                [[NSUserDefaults standardUserDefaults] setObject:@"gemini-3.5-flash-lite" forKey:kGeminiModelPref];
             }
             [[NSUserDefaults standardUserDefaults] synchronize];
             sCurrentKeyIndex = 0;
@@ -249,9 +250,8 @@ static void CallGeminiTranslation(NSArray *texts,
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
         NSInteger statusCode = httpResponse.statusCode;
         
-        LOG(@"Gemini response status: %ld", (long)statusCode);
+        LOG(@"Gemini (%@) response status: %ld", model, (long)statusCode);
         
-        // Nếu lỗi 404 (sai tên model) hoặc 429/400/403 (lỗi key) -> Tự động xoay key / thử model khác
         BOOL isKeyOrModelError = (statusCode == 429 || statusCode == 400 || statusCode == 401 || statusCode == 403 || statusCode == 404);
         
         if ((isKeyOrModelError || netError) && attempt < maxTries - 1) {
@@ -289,7 +289,7 @@ static void CallGeminiTranslation(NSArray *texts,
             LOG(@"Không parse được bản dịch từ Gemini, trả về text gốc.");
             translatedList = texts;
         } else {
-            LOG(@"Dịch thành công %lu câu bằng Gemini!", (unsigned long)[translatedList count]);
+            LOG(@"Dịch thành công %lu câu bằng Gemini (%@)!", (unsigned long)[translatedList count], model);
         }
         
         completion(translatedList);
@@ -297,7 +297,7 @@ static void CallGeminiTranslation(NSArray *texts,
 }
 
 // =========================================================================
-// METHOD SWIZZLING TRỰC TIẾP TRÊN NSURLSESSION (KHÔNG QUA PROTOCOL)
+// METHOD SWIZZLING TRỰC TIẾP TRÊN NSURLSESSION
 // =========================================================================
 
 static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
@@ -342,7 +342,6 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
                 completionHandler(data, fakeResp, nil);
             });
         }
-        // Trả về task giả lập rỗng
         return [self hook_dataTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:nil];
     }
     
@@ -394,7 +393,6 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
         }
     }
     
-    // Cho các request khác (kể cả gọi sang Google Gemini) đi bình thường
     return [self hook_dataTaskWithRequest:request completionHandler:completionHandler];
 }
 
@@ -414,7 +412,7 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
 
 __attribute__((constructor))
 static void InitEasyComixGeminiHook(void) {
-    LOG(@"EasyComix Gemini Direct Hook Initialized!");
+    LOG(@"EasyComix Gemini Direct Hook Initialized with gemini-3.5-flash-lite!");
     
     SwizzleMethod([NSURLSession class],
                   @selector(dataTaskWithRequest:completionHandler:),
