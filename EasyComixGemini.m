@@ -24,7 +24,6 @@ static NSArray<NSString *> *GetGeminiKeyPool(void) {
         return @[];
     }
     
-    // Tách theo dòng mới hoặc dấu phẩy
     NSArray *components = [rawKeys componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\n,"]];
     NSMutableArray *validKeys = [NSMutableArray array];
     
@@ -54,7 +53,7 @@ static void RotateToNextKey(void) {
 static NSString *GetSavedGeminiModel(void) {
     NSString *model = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiModelPref];
     if (!model || model.length == 0) {
-        return @"gemini-2.5-flash-lite"; // Mặc định chuẩn mới
+        return @"gemini-2.5-flash-lite";
     }
     return [model stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
@@ -80,7 +79,7 @@ static void ShowGeminiSettingsPopup(void) {
         
         NSArray *currentKeys = GetGeminiKeyPool();
         NSString *currentKeysText = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiKeysPref] ?: @"";
-        NSString *message = [NSString stringWithFormat:@"Đang có %lu Key trong Pool.\n(Dán nhiều Key, mỗi dòng 1 Key để tự động đổi khi hết hạn mức)", (unsigned long)currentKeys.count];
+        NSString *message = [NSString stringWithFormat:@"Đang có %lu Key trong Pool.\n(Dán nhiều Key, mỗi dòng 1 Key để tự động xoay khi hết hạn mức)", (unsigned long)currentKeys.count];
         
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🤖 Gemini Key Pool & Model"
                                                                        message:message
@@ -197,6 +196,12 @@ static void AddFloatingButtonToWindow(void) {
 
 @interface EasyComixURLProtocol : NSURLProtocol <NSURLSessionDataDelegate>
 @property (nonatomic, strong) NSURLSessionDataTask *task;
+@end
+
+@interface EasyComixURLProtocol ()
+- (void)executeGeminiRequestWithTexts:(NSArray *)texts sourceLang:(NSString *)srcLang targetLang:(NSString *)tgtLang attemptNo:(NSUInteger)attempt maxTries:(NSUInteger)maxTries;
+- (void)sendJsonResponse:(NSDictionary *)jsonDict statusCode:(NSInteger)code;
+- (NSData *)readDataFromStream:(NSInputStream *)stream;
 @end
 
 @implementation EasyComixURLProtocol
