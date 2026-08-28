@@ -6,7 +6,7 @@
 
 /**
  * EasyComix Gemini Tweak (Dylib) - Direct NSURLSession & URLProtocol Intercept
- * 1. TỰ ĐỘNG ĐĂNG NHẬP PRO VIP (Auto-Login): Cấp chuỗi JWT RFC 7519 chuẩn hóa cho Supabase Auth, Keychain & TokenProvider.
+ * 1. TỰ ĐỘNG ĐĂNG NHẬP PRO VIP (Auto-Login): Cấp chuỗi JWT RFC 7519 & Session tương thích 100% Supabase Swift v2 (hỗ trợ cả camelCase & snake_case).
  * 2. Mở khóa TOÀN BỘ tính năng PRO (VIP trọn đời): Mở khóa Shortcut, Fonts tùy chỉnh, Không quảng cáo, Dịch AI không giới hạn.
  * 3. Hook RevenueCat Runtime & Intercept Network để giả lập thuê bao Pro trọn đời (2099).
  * 4. Chuyển hướng toàn bộ dịch thuật (Single Page, Batch Chapter, Live Scroll, Live Paged) sang Google Gemini API.
@@ -546,31 +546,52 @@ static NSDictionary *LocalRevenueCatSubscriberResponse(void) {
     };
 }
 
+/**
+ * Cung cấp Session Supabase tương thích 100% cả camelCase (Swift JSONDecoder) và snake_case (GoTrue API)
+ */
 static NSData *GetMockSupabaseSessionData(void) {
     NSDictionary *sessionDict = @{
+        @"accessToken": kMockValidJWT,
         @"access_token": kMockValidJWT,
+        @"tokenType": @"bearer",
         @"token_type": @"bearer",
+        @"expiresIn": @(315360000),
         @"expires_in": @(315360000),
+        @"expiresAt": @(4102444800),
         @"expires_at": @(4102444800),
+        @"refreshToken": kMockRefreshToken,
         @"refresh_token": kMockRefreshToken,
         @"user": @{
             @"id": @"11111111-2222-3333-4444-555555555555",
             @"aud": @"authenticated",
             @"role": @"authenticated",
             @"email": @"pro_vip@easycomix.gemini",
-            @"email_confirmed_at": @"2024-01-01T00:00:00.000Z",
-            @"confirmed_at": @"2024-01-01T00:00:00.000Z",
-            @"last_sign_in_at": @"2024-01-01T00:00:00.000Z",
+            @"phone": @"",
+            @"emailConfirmedAt": @"2024-01-01T00:00:00Z",
+            @"email_confirmed_at": @"2024-01-01T00:00:00Z",
+            @"confirmedAt": @"2024-01-01T00:00:00Z",
+            @"confirmed_at": @"2024-01-01T00:00:00Z",
+            @"lastSignInAt": @"2024-01-01T00:00:00Z",
+            @"last_sign_in_at": @"2024-01-01T00:00:00Z",
+            @"createdAt": @"2024-01-01T00:00:00Z",
+            @"created_at": @"2024-01-01T00:00:00Z",
+            @"updatedAt": @"2024-01-01T00:00:00Z",
+            @"updated_at": @"2024-01-01T00:00:00Z",
+            @"appMetadata": @{ @"provider": @"apple", @"providers": @[ @"apple", @"google" ] },
             @"app_metadata": @{ @"provider": @"apple", @"providers": @[ @"apple", @"google" ] },
+            @"userMetadata": @{
+                @"full_name": @"Gemini PRO VIP",
+                @"name": @"Gemini PRO",
+                @"is_pro": @YES,
+                @"tier": @"pro"
+            },
             @"user_metadata": @{
                 @"full_name": @"Gemini PRO VIP",
                 @"name": @"Gemini PRO",
                 @"is_pro": @YES,
                 @"tier": @"pro"
             },
-            @"identities": @[],
-            @"created_at": @"2024-01-01T00:00:00.000Z",
-            @"updated_at": @"2024-01-01T00:00:00.000Z"
+            @"identities": @[]
         }
     };
     return [NSJSONSerialization dataWithJSONObject:sessionDict options:0 error:nil];
@@ -748,11 +769,22 @@ static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
         [combined containsString:@"session"] ||
         [combined containsString:@"token"]) {
         
-        if (result && [queryDict[(__bridge id)kSecReturnData] boolValue]) {
+        if (result) {
             NSData *sessionData = GetMockSupabaseSessionData();
-            *result = (CFTypeRef)CFBridgingRetain(sessionData);
-            LOG(@"SecItemCopyMatching intercepted for %@", combined);
-            return errSecSuccess;
+            if ([queryDict[(__bridge id)kSecReturnData] boolValue]) {
+                *result = (CFTypeRef)CFBridgingRetain(sessionData);
+                LOG(@"SecItemCopyMatching (data) intercepted for %@", combined);
+                return errSecSuccess;
+            } else if ([queryDict[(__bridge id)kSecReturnAttributes] boolValue]) {
+                NSDictionary *attrDict = @{
+                    (__bridge id)kSecAttrAccount: account ?: @"supabase.auth.token",
+                    (__bridge id)kSecAttrService: service ?: @"supabase.auth.token",
+                    (__bridge id)kSecValueData: sessionData
+                };
+                *result = (CFTypeRef)CFBridgingRetain(attrDict);
+                LOG(@"SecItemCopyMatching (attributes) intercepted for %@", combined);
+                return errSecSuccess;
+            }
         }
     }
     
@@ -774,9 +806,20 @@ static void AutoSeedSupabaseProSession(void) {
     [defaults setObject:sessionString forKey:@"supabase.session.string"];
     [defaults setObject:sessionString forKey:@"supabase.gotrue.swift"];
     [defaults setObject:@"pro" forKey:@"translationMode"];
+    [defaults setObject:@YES forKey:@"is_pro"];
+    [defaults setObject:@YES forKey:@"isPro"];
+    [defaults setObject:@YES forKey:@"hasProSubscription"];
+    [defaults setObject:@"pro" forKey:@"tier"];
     [defaults synchronize];
     
-    NSArray *keys = @[@"supabase.auth.token", @"supabase.session", @"supabase.gotrue.swift", @"app.easycomix.session"];
+    NSArray *keys = @[
+        @"supabase.auth.token",
+        @"supabase.session",
+        @"supabase.gotrue.swift",
+        @"app.easycomix.session",
+        @"supabase.auth.refreshToken",
+        @"supabase.auth.accessToken"
+    ];
     for (NSString *key in keys) {
         NSDictionary *delQuery = @{
             (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
@@ -793,7 +836,13 @@ static void AutoSeedSupabaseProSession(void) {
         };
         SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
     }
-    LOG(@"Đã tự động nạp phiên đăng nhập PRO VIP (JWT RFC 7519) vào Keychain & UserDefaults!");
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"AuthClient.didChangeAuthStateNotification" object:nil];
+        LOG(@"Đã phát thông báo AuthClient.didChangeAuthStateNotification!");
+    });
+
+    LOG(@"Đã tự động nạp phiên đăng nhập PRO VIP (JWT RFC 7519 + Dual Camel/Snake Case) vào Keychain & UserDefaults!");
 }
 
 // =========================================================================
@@ -1210,7 +1259,7 @@ static void InitEasyComixGeminiHook(void) {
     }
     [[NSUserDefaults standardUserDefaults] synchronize];
     
-    // Tự động nạp session Pro VIP vào Keychain & UserDefaults (JWT chuẩn RFC 7519)
+    // Tự động nạp session Pro VIP vào Keychain & UserDefaults
     AutoSeedSupabaseProSession();
     
     // Mở khóa PRO Runtime trên RevenueCat SDK
