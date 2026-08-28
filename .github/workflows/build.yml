@@ -25,6 +25,8 @@ jobs:
             -fobjc-arc \
             -framework Foundation \
             -framework UIKit \
+            -framework QuartzCore \
+            -framework CoreGraphics \
             -framework Security \
             -install_name @rpath/EasyComixGemini.dylib \
             EasyComixGemini.m \
