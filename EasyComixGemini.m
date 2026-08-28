@@ -5,15 +5,14 @@
 #import <objc/runtime.h>
 
 /**
- * EasyComix Gemini Tweak (Dylib) - Direct NSURLSession & URLProtocol Intercept
- * 1. TỰ ĐỘNG ĐĂNG NHẬP PRO VIP (Auto-Login): Cấp chuỗi JWT RFC 7519 & Session tương thích 100% Supabase Swift v2 (hỗ trợ cả camelCase & snake_case).
- * 2. Mở khóa TOÀN BỘ tính năng PRO (VIP trọn đời): Mở khóa Shortcut, Fonts tùy chỉnh, Không quảng cáo, Dịch AI không giới hạn.
- * 3. Hook RevenueCat Runtime & Intercept Network để giả lập thuê bao Pro trọn đời (2099).
- * 4. Chuyển hướng toàn bộ dịch thuật (Single Page, Batch Chapter, Live Scroll, Live Paged) sang Google Gemini API.
- * 5. Tự động fake Quota PRO (999.999 lượt) & xóa cache hạn mức cũ.
- * 6. Chặn triệt để popup cập nhật (Soft Update & Force Update) để không bao giờ bị làm phiền hay khóa app.
- * 7. Tích hợp bộ đếm thống kê số lần và số câu thoại đã dịch vào nút nổi 🤖 Key.
- * 8. Standalone / Offline Fallback: Giả lập 100% API server EasyComix & Auth Supabase để app hoạt động vĩnh viễn không phụ thuộc server gốc.
+ * EasyComix Gemini Tweak (Dylib) - Direct Intercept
+ * 1. TỰ ĐỘNG ĐĂNG NHẬP PRO VIP: Cấp chuỗi Session JWT RFC 7519 tương thích 100% Supabase Swift v2 (hỗ trợ cả camelCase & snake_case).
+ * 2. Mở khóa TOÀN BỘ tính năng PRO: Không giới hạn lượt dịch, không quảng cáo, mở khóa Shortcuts, Fonts tùy chỉnh.
+ * 3. Chuyển hướng toàn bộ luồng dịch thuật (Single Page, Batch Chapter, Live Scroll, Live Paged) sang Google Gemini API.
+ * 4. Tự động fake Quota PRO (999.999 lượt) & xóa cache hạn mức cũ.
+ * 5. Chặn triệt để popup cập nhật (Soft Update & Force Update).
+ * 6. Tích hợp bộ đếm thống kê số lần và số câu thoại đã dịch vào nút nổi 🤖 Key.
+ * 7. Ổn định 100%: Chỉ can thiệp đúng các API endpoint và Supabase Keychain, không can thiệp luồng hệ thống tránh crash.
  */
 
 #define LOG(fmt, ...) NSLog(@"[EasyComixGemini] " fmt, ##__VA_ARGS__)
@@ -746,7 +745,7 @@ static void HandleTranslationRequest(NSURLRequest *request,
 }
 
 // =========================================================================
-// DYLD INTERPOSING CHO KEYCHAIN (TỰ ĐỘNG CẤP SESSION PRO CHO SUPABASE AUTH)
+// DYLD INTERPOSING CHO KEYCHAIN (CHỈ CAN THIỆP SUPABASE AUTH KEYCHAIN)
 // =========================================================================
 
 typedef struct interpose_s {
@@ -758,31 +757,48 @@ typedef struct interpose_s {
 __attribute__((used)) static const interpose_t _interpose_##_replacee \
 __attribute__((section("__DATA,__interpose"))) = { (const void *)(unsigned long)&_replacement, (const void *)(unsigned long)&_replacee };
 
-static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
-    NSDictionary *queryDict = (__bridge NSDictionary *)query;
+static BOOL IsSupabaseKeychainQuery(NSDictionary *queryDict) {
+    if (!queryDict || ![queryDict isKindOfClass:[NSDictionary class]]) return NO;
+    
     id account = queryDict[(__bridge id)kSecAttrAccount];
     id service = queryDict[(__bridge id)kSecAttrService];
-    NSString *combined = [NSString stringWithFormat:@"%@ %@", account ?: @"", service ?: @""];
     
-    if ([combined containsString:@"supabase"] ||
-        [combined containsString:@"auth"] ||
-        [combined containsString:@"session"] ||
-        [combined containsString:@"token"]) {
-        
+    NSString *accStr = [account isKindOfClass:[NSString class]] ? account : @"";
+    NSString *srvStr = [service isKindOfClass:[NSString class]] ? service : @"";
+    
+    if ([accStr isEqualToString:@"supabase.auth.token"] ||
+        [srvStr isEqualToString:@"supabase.auth.token"] ||
+        [accStr isEqualToString:@"supabase.session"] ||
+        [srvStr isEqualToString:@"supabase.session"] ||
+        [accStr isEqualToString:@"supabase.gotrue.swift"] ||
+        [srvStr isEqualToString:@"supabase.gotrue.swift"] ||
+        [accStr isEqualToString:@"app.easycomix.session"] ||
+        [srvStr isEqualToString:@"app.easycomix.session"]) {
+        return YES;
+    }
+    return NO;
+}
+
+static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
+    NSDictionary *queryDict = (__bridge NSDictionary *)query;
+    
+    if (IsSupabaseKeychainQuery(queryDict)) {
         if (result) {
             NSData *sessionData = GetMockSupabaseSessionData();
             if ([queryDict[(__bridge id)kSecReturnData] boolValue]) {
                 *result = (CFTypeRef)CFBridgingRetain(sessionData);
-                LOG(@"SecItemCopyMatching (data) intercepted for %@", combined);
+                LOG(@"SecItemCopyMatching (data) intercepted for Supabase Session");
                 return errSecSuccess;
             } else if ([queryDict[(__bridge id)kSecReturnAttributes] boolValue]) {
+                id account = queryDict[(__bridge id)kSecAttrAccount];
+                id service = queryDict[(__bridge id)kSecAttrService];
                 NSDictionary *attrDict = @{
                     (__bridge id)kSecAttrAccount: account ?: @"supabase.auth.token",
                     (__bridge id)kSecAttrService: service ?: @"supabase.auth.token",
                     (__bridge id)kSecValueData: sessionData
                 };
                 *result = (CFTypeRef)CFBridgingRetain(attrDict);
-                LOG(@"SecItemCopyMatching (attributes) intercepted for %@", combined);
+                LOG(@"SecItemCopyMatching (attributes) intercepted for Supabase Session");
                 return errSecSuccess;
             }
         }
@@ -994,10 +1010,6 @@ static void PrependGeminiProtocol(NSURLSessionConfiguration *configuration) {
 
 @end
 
-// =========================================================================
-// METHOD SWIZZLING TRỰC TIẾP TRÊN NSURLSESSION
-// =========================================================================
-
 static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
     Method origMethod = class_getInstanceMethod(cls, origSel);
     Method newMethod = class_getInstanceMethod(cls, newSel);
@@ -1010,186 +1022,6 @@ static void SwizzleClassMethod(Class cls, SEL origSel, SEL newSel) {
     SwizzleMethod(object_getClass(cls), origSel, newSel);
 }
 
-@interface NSURLSession (EasyComixDirectHook)
-@end
-
-@implementation NSURLSession (EasyComixDirectHook)
-
-- (NSURLSessionDataTask *)hook_dataTaskWithRequest:(NSURLRequest *)request
-                                completionHandler:(void (^)(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error))completionHandler {
-    
-    NSString *urlString = request.URL.absoluteString ?: @"";
-    NSString *path = request.URL.path ?: @"";
-    
-    // 1. Chặn RevenueCat (Mở khóa PRO trọn đời)
-    if ([urlString containsString:@"revenuecat.com"]) {
-        LOG(@"Directly Hooked RevenueCat Pro Request: %@", urlString);
-        if (completionHandler) {
-            NSData *data = [NSJSONSerialization dataWithJSONObject:LocalRevenueCatSubscriberResponse() options:0 error:nil];
-            NSHTTPURLResponse *fakeResp = [[NSHTTPURLResponse alloc] initWithURL:request.URL
-                                                                      statusCode:200
-                                                                     HTTPVersion:@"HTTP/1.1"
-                                                                    headerFields:@{
-                                                                        @"Content-Type": @"application/json; charset=utf-8",
-                                                                        @"Access-Control-Allow-Origin": @"*"
-                                                                    }];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(data, fakeResp, nil);
-            });
-        }
-        return [self hook_dataTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:nil];
-    }
-
-    // 2. Chặn Auth Supabase (Giả lập session đăng nhập offline)
-    if ([urlString containsString:@"supabase.co"]) {
-        LOG(@"Directly Hooked Supabase Request: %@", urlString);
-        if (completionHandler) {
-            id respObj = [urlString containsString:@"/auth/v1/"] ? LocalSupabaseAuthResponse() : @[];
-            NSData *data = [NSJSONSerialization dataWithJSONObject:respObj options:0 error:nil];
-            NSHTTPURLResponse *fakeResp = [[NSHTTPURLResponse alloc] initWithURL:request.URL
-                                                                      statusCode:200
-                                                                     HTTPVersion:@"HTTP/1.1"
-                                                                    headerFields:@{
-                                                                        @"Content-Type": @"application/json; charset=utf-8",
-                                                                        @"Access-Control-Allow-Origin": @"*"
-                                                                    }];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(data, fakeResp, nil);
-            });
-        }
-        return [self hook_dataTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:nil];
-    }
-    
-    // 3. Chặn Quota Config (/quota/config)
-    if ([urlString containsString:@"api.easycomix.app"] && [path containsString:@"/quota/config"]) {
-        LOG(@"Directly Hooked Quota Config Request: %@", urlString);
-        if (completionHandler) {
-            NSData *data = [NSJSONSerialization dataWithJSONObject:LocalQuotaConfigResponse() options:0 error:nil];
-            NSHTTPURLResponse *fakeResp = [[NSHTTPURLResponse alloc] initWithURL:request.URL
-                                                                      statusCode:200
-                                                                     HTTPVersion:@"HTTP/1.1"
-                                                                    headerFields:@{
-                                                                        @"Content-Type": @"application/json; charset=utf-8",
-                                                                        @"Access-Control-Allow-Origin": @"*"
-                                                                    }];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(data, fakeResp, nil);
-            });
-        }
-        return [self hook_dataTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:nil];
-    }
-
-    // 4. Chặn Endpoint Quota (/quota)
-    if ([urlString containsString:@"api.easycomix.app"] && [path containsString:@"/quota"]) {
-        LOG(@"Directly Hooked Quota Request: %@", urlString);
-        if (completionHandler) {
-            NSData *data = [NSJSONSerialization dataWithJSONObject:LocalQuotaResponse() options:0 error:nil];
-            NSHTTPURLResponse *fakeResp = [[NSHTTPURLResponse alloc] initWithURL:request.URL
-                                                                      statusCode:200
-                                                                     HTTPVersion:@"HTTP/1.1"
-                                                                    headerFields:@{
-                                                                        @"Content-Type": @"application/json; charset=utf-8",
-                                                                        @"Access-Control-Allow-Origin": @"*"
-                                                                    }];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(data, fakeResp, nil);
-            });
-        }
-        return [self hook_dataTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:nil];
-    }
-    
-    // 5. Chặn Endpoint Dịch thuật (/api/v1/translate và /api/v1/translate/chapter)
-    if ([urlString containsString:@"api.easycomix.app"] && [path containsString:@"/translate"]) {
-        LOG(@"Directly Hooked Translate Request: %@", urlString);
-        if (completionHandler) {
-            HandleTranslationRequest(request, ^(NSData *responseData, NSHTTPURLResponse *response, NSError *error) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completionHandler(responseData, response, error);
-                });
-            });
-        }
-        return [self hook_dataTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:nil];
-    }
-    
-    // 6. Chặn Ad rules (/config/ad-rules)
-    if ([urlString containsString:@"api.easycomix.app"] && [path containsString:@"/ad-rules"]) {
-        LOG(@"Directly Hooked AdRules Request: %@", urlString);
-        if (completionHandler) {
-            NSData *data = [NSJSONSerialization dataWithJSONObject:LocalAdRulesResponse() options:0 error:nil];
-            NSHTTPURLResponse *fakeResp = [[NSHTTPURLResponse alloc] initWithURL:request.URL
-                                                                      statusCode:200
-                                                                     HTTPVersion:@"HTTP/1.1"
-                                                                    headerFields:@{
-                                                                        @"Content-Type": @"application/json; charset=utf-8",
-                                                                        @"Access-Control-Allow-Origin": @"*"
-                                                                    }];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(data, fakeResp, nil);
-            });
-        }
-        return [self hook_dataTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:nil];
-    }
-
-    // 7. Chống sập server: Bất kỳ request nào khác đến api.easycomix.app đều trả về 200 OK giả lập
-    if ([urlString containsString:@"api.easycomix.app"]) {
-        LOG(@"Mocked EasyComix server request: %@", urlString);
-        if (completionHandler) {
-            NSData *data = [NSJSONSerialization dataWithJSONObject:LocalGenericSuccessResponse() options:0 error:nil];
-            NSHTTPURLResponse *fakeResp = [[NSHTTPURLResponse alloc] initWithURL:request.URL
-                                                                      statusCode:200
-                                                                     HTTPVersion:@"HTTP/1.1"
-                                                                    headerFields:@{
-                                                                        @"Content-Type": @"application/json; charset=utf-8",
-                                                                        @"Access-Control-Allow-Origin": @"*"
-                                                                    }];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(data, fakeResp, nil);
-            });
-        }
-        return [self hook_dataTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:nil];
-    }
-    
-    return [self hook_dataTaskWithRequest:request completionHandler:completionHandler];
-}
-
-@end
-
-// =========================================================================
-// RUNTIME SWIZZLING CHO REVENUECAT (MỞ KHÓA PRO TRỌN ĐỜI CHO APPS & SHORTCUTS)
-// =========================================================================
-
-@interface NSObject (RevenueCatProHook)
-- (BOOL)rc_hook_isActive;
-- (BOOL)rc_hook_willRenew;
-- (NSDate *)rc_hook_expirationDate;
-- (NSSet *)rc_hook_activeSubscriptions;
-- (NSSet *)rc_hook_allPurchasedProductIdentifiers;
-@end
-
-@implementation NSObject (RevenueCatProHook)
-
-- (BOOL)rc_hook_isActive {
-    return YES;
-}
-
-- (BOOL)rc_hook_willRenew {
-    return YES;
-}
-
-- (NSDate *)rc_hook_expirationDate {
-    return [NSDate dateWithTimeIntervalSince1970:4102444800]; // Năm 2100
-}
-
-- (NSSet *)rc_hook_activeSubscriptions {
-    return [NSSet setWithObjects:@"easycomix_pro_yearly", @"easycomix_pro_monthly", nil];
-}
-
-- (NSSet *)rc_hook_allPurchasedProductIdentifiers {
-    return [NSSet setWithObjects:@"easycomix_pro_yearly", @"easycomix_pro_monthly", nil];
-}
-
-@end
-
 // =========================================================================
 // CHẶN BẢNG THÔNG BÁO CẬP NHẬT
 // =========================================================================
@@ -1200,7 +1032,6 @@ static void SwizzleClassMethod(Class cls, SEL origSel, SEL newSel) {
 @implementation NSBundle (EasyComixVersionHook)
 
 - (id)hook_objectForInfoDictionaryKey:(NSString *)key {
-    // Trả về phiên bản 99.9.9 để AppVersionManager luôn thấy app ở bản mới nhất -> không bao giờ hiện popup update
     if ([key isEqualToString:@"CFBundleShortVersionString"]) {
         return @"99.9.9";
     }
@@ -1225,7 +1056,6 @@ static void SwizzleClassMethod(Class cls, SEL origSel, SEL newSel) {
     
     NSString *className = NSStringFromClass([viewControllerToPresent class]);
     
-    // 1. Chặn các Controller cập nhật nếu có
     if ([className containsString:@"Update"] ||
         [className containsString:@"SoftUpdate"] ||
         [className containsString:@"HardUpdate"]) {
@@ -1262,31 +1092,10 @@ static void InitEasyComixGeminiHook(void) {
     // Tự động nạp session Pro VIP vào Keychain & UserDefaults
     AutoSeedSupabaseProSession();
     
-    // Mở khóa PRO Runtime trên RevenueCat SDK
-    Class rcEntitlementInfo = NSClassFromString(@"RCEntitlementInfo");
-    if (rcEntitlementInfo) {
-        SwizzleMethod(rcEntitlementInfo, @selector(isActive), @selector(rc_hook_isActive));
-        SwizzleMethod(rcEntitlementInfo, @selector(willRenew), @selector(rc_hook_willRenew));
-        SwizzleMethod(rcEntitlementInfo, @selector(expirationDate), @selector(rc_hook_expirationDate));
-        LOG(@"RevenueCat RCEntitlementInfo PRO hook activated!");
-    }
-    
-    Class rcCustomerInfo = NSClassFromString(@"RCCustomerInfo");
-    if (rcCustomerInfo) {
-        SwizzleMethod(rcCustomerInfo, @selector(activeSubscriptions), @selector(rc_hook_activeSubscriptions));
-        SwizzleMethod(rcCustomerInfo, @selector(allPurchasedProductIdentifiers), @selector(rc_hook_allPurchasedProductIdentifiers));
-        LOG(@"RevenueCat RCCustomerInfo PRO hook activated!");
-    }
-    
     // Hook version check của Bundle
     SwizzleMethod([NSBundle class],
                   @selector(objectForInfoDictionaryKey:),
                   @selector(hook_objectForInfoDictionaryKey:));
-    
-    // Hook NSURLSession
-    SwizzleMethod([NSURLSession class],
-                  @selector(dataTaskWithRequest:completionHandler:),
-                  @selector(hook_dataTaskWithRequest:completionHandler:));
 
     // Hook URLProtocol & Configuration
     [NSURLProtocol registerClass:[EasyComixGeminiURLProtocol class]];
