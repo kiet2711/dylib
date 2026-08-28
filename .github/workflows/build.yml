@@ -1,0 +1,33 @@
+name: Build iOS Dylib
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compile EasyComixGemini.dylib
+        run: |
+          clang -dynamiclib -arch arm64 \
+            -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+            -miphoneos-version-min=14.0 \
+            -framework Foundation \
+            -framework Security \
+            EasyComixGemini.m \
+            -o EasyComixGemini.dylib
+          
+          echo "File size: $(ls -lh EasyComixGemini.dylib)"
+          file EasyComixGemini.dylib
+
+      - name: Upload Dylib Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasyComixGemini-dylib
+          path: EasyComixGemini.dylib
