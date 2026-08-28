@@ -19,11 +19,12 @@ jobs:
             -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
             -miphoneos-version-min=14.0 \
             -framework Foundation \
+            -framework UIKit \
             -framework Security \
             EasyComixGemini.m \
             -o EasyComixGemini.dylib
           
-          echo "File size: $(ls -lh EasyComixGemini.dylib)"
+          echo "Build successful! File size: $(ls -lh EasyComixGemini.dylib)"
           file EasyComixGemini.dylib
 
       - name: Upload Dylib Artifact
