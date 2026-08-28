@@ -4,9 +4,9 @@
 #import <objc/runtime.h>
 
 /**
- * EasyComix Gemini Tweak (Dylib) - Direct NSURLSession Swizzling
- * Bắt trực tiếp HTTPBody không qua NSURLProtocol (tránh lỗi nil body của iOS)
- * Tự động xoay vòng đa API Key (Key Rotation)
+ * EasyComix Gemini Tweak (Dylib) - Direct NSURLSession Swizzling & Quota Bypass
+ * Tự động xóa sạch Cache Quota cũ khi khởi động app
+ * Bắt toàn diện mọi endpoint Quota, Live Quota, Single Translate & Chapter Translate
  * Mặc định: gemini-3.5-flash-lite
  */
 
@@ -55,7 +55,7 @@ static void RotateToNextKey(void) {
 static NSString *GetSavedGeminiModel(void) {
     NSString *model = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiModelPref];
     if (!model || [model length] == 0) {
-        return @"gemini-3.5-flash-lite"; // Mặc định chuyển sang gemini-3.5-flash-lite
+        return @"gemini-3.5-flash-lite";
     }
     return [model stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
@@ -318,8 +318,11 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
     
     NSString *urlString = request.URL.absoluteString;
     
-    // 1. Chặn Endpoint Quota
-    if ([urlString containsString:@"api.easycomix.app"] && [urlString containsString:@"/quota"]) {
+    // 1. Chặn Endpoint Quota (GET/POST /api/v1/translate/quota)
+    if ([urlString containsString:@"api.easycomix.app"] &&
+        [urlString containsString:@"/quota"] &&
+        ![urlString containsString:@"/quota/config"]) {
+        
         LOG(@"Directly Hooked Quota Request: %@", urlString);
         if (completionHandler) {
             NSDictionary *fakeQuota = @{
@@ -327,7 +330,29 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
                 @"data": @{
                     @"tier": @"free",
                     @"remaining": @999999,
-                    @"resetAt": @"2099-01-01T00:00:00.000Z"
+                    @"resetAt": @"2099-01-01T00:00:00.000Z",
+                    @"quota": @{
+                        @"tier": @"free",
+                        @"remaining": @999999,
+                        @"resetAt": @"2099-01-01T00:00:00.000Z"
+                    },
+                    @"liveQuota": @{
+                        @"tier": @"free",
+                        @"remaining": @999999,
+                        @"resetAt": @"2099-01-01T00:00:00.000Z"
+                    }
+                },
+                @"meta": @{
+                    @"quota": @{
+                        @"tier": @"free",
+                        @"remaining": @999999,
+                        @"resetAt": @"2099-01-01T00:00:00.000Z"
+                    },
+                    @"liveQuota": @{
+                        @"tier": @"free",
+                        @"remaining": @999999,
+                        @"resetAt": @"2099-01-01T00:00:00.000Z"
+                    }
                 }
             };
             NSData *data = [NSJSONSerialization dataWithJSONObject:fakeQuota options:0 error:nil];
@@ -345,7 +370,7 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
         return [self hook_dataTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:nil];
     }
     
-    // 2. Chặn Endpoint Dịch thuật
+    // 2. Chặn Endpoint Dịch thuật (/api/v1/translate và /translate/chapter)
     if ([urlString containsString:@"api.easycomix.app"] && [urlString containsString:@"/translate"]) {
         LOG(@"Directly Hooked Translate Request: %@", urlString);
         
@@ -368,6 +393,11 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
                         },
                         @"meta": @{
                             @"quota": @{
+                                @"tier": @"free",
+                                @"remaining": @999999,
+                                @"resetAt": @"2099-01-01T00:00:00.000Z"
+                            },
+                            @"liveQuota": @{
                                 @"tier": @"free",
                                 @"remaining": @999999,
                                 @"resetAt": @"2099-01-01T00:00:00.000Z"
@@ -410,9 +440,22 @@ static void SwizzleMethod(Class cls, SEL origSel, SEL newSel) {
 
 @end
 
+// =========================================================================
+// KHỞI TẠO TWEAK & XÓA CACHE QUOTA CŨ
+// =========================================================================
+
 __attribute__((constructor))
 static void InitEasyComixGeminiHook(void) {
     LOG(@"EasyComix Gemini Direct Hook Initialized with gemini-3.5-flash-lite!");
+    
+    // Tự động xóa cache hạn mức cũ trong UserDefaults của app
+    NSDictionary *defaultsDict = [[NSUserDefaults standardUserDefaults] dictionaryRepresentation];
+    for (NSString *key in [defaultsDict allKeys]) {
+        if ([key containsString:@"quota"] || [key containsString:@"Quota"] || [key containsString:@"limit"]) {
+            [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
+        }
+    }
+    [[NSUserDefaults standardUserDefaults] synchronize];
     
     SwizzleMethod([NSURLSession class],
                   @selector(dataTaskWithRequest:completionHandler:),
