@@ -76,7 +76,7 @@ static void SaveGeminiSettings(NSString *rawKeys, NSString *model) {
     [[NSUserDefaults standardUserDefaults] setObject:safeModel forKey:kGeminiModelPref];
     [[NSUserDefaults standardUserDefaults] synchronize];
     
-    @synchronized ([EasyComixGeminiURLProtocol class]) {
+    @synchronized (kGeminiKeysPref) {
         sCurrentKeyIndex = 0;
     }
     LOG(@"Đã lưu cấu hình: %lu keys, model: %@", (unsigned long)[parsed count], safeModel);
@@ -91,7 +91,7 @@ static NSString *GetKeyForAttempt(NSUInteger attempt, NSUInteger *outIndex, NSUI
     }
     
     NSUInteger idx = 0;
-    @synchronized ([EasyComixGeminiURLProtocol class]) {
+    @synchronized (kGeminiKeysPref) {
         idx = (sCurrentKeyIndex + attempt) % [keys count];
     }
     if (outIndex) *outIndex = idx;
@@ -101,7 +101,7 @@ static NSString *GetKeyForAttempt(NSUInteger attempt, NSUInteger *outIndex, NSUI
 static void RotateToNextKey(void) {
     NSArray<NSString *> *keys = GetGeminiKeyPool();
     if ([keys count] > 1) {
-        @synchronized ([EasyComixGeminiURLProtocol class]) {
+        @synchronized (kGeminiKeysPref) {
             sCurrentKeyIndex = (sCurrentKeyIndex + 1) % [keys count];
             LOG(@"Đã tự động xoay sang Key #%lu/%lu", (unsigned long)(sCurrentKeyIndex + 1), (unsigned long)[keys count]);
         }
