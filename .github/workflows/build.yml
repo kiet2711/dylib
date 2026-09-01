@@ -18,6 +18,7 @@ jobs:
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "Building with iOS SDK at: $SDK_PATH"
           
+          set -o pipefail
           clang -dynamiclib \
             -arch arm64 \
             -isysroot "$SDK_PATH" \
@@ -30,13 +31,21 @@ jobs:
             -framework Security \
             -install_name @rpath/EasyComixGemini.dylib \
             EasyComixGemini.m \
-            -o EasyComixGemini.dylib
+            -o EasyComixGemini.dylib 2>&1 | tee compile_output.txt
           
           echo "Build successful!"
           ls -lh EasyComixGemini.dylib
           file EasyComixGemini.dylib
 
+      - name: Upload Compile Log on Failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-log
+          path: compile_output.txt
+
       - name: Upload Dylib Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: EasyComixGemini-dylib
