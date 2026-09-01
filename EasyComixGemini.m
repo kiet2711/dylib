@@ -25,7 +25,7 @@ static NSUInteger sCurrentKeyIndex = 0;
 - (void)updateAppearance;
 @end
 
-static __weak GeminiFloatingButton *sFloatingButton = nil;
+static GeminiFloatingButton *sFloatingButton = nil;
 static void ShowGeminiSettingsPopup(void);
 static void ShowToastMessage(NSString *message);
 
@@ -127,13 +127,18 @@ static void ShowToastMessage(NSString *message) {
         toast.numberOfLines = 2;
         
         CGSize textSize = [message sizeWithAttributes:@{NSFontAttributeName: toast.font}];
-        CGFloat width = MIN(textSize.width + 36, keyWindow.bounds.size.width - 40);
-        CGFloat height = 40;
+        CGFloat screenWidth = CGRectGetWidth(keyWindow.bounds);
+        CGFloat maxW = screenWidth > 40.0 ? (screenWidth - 40.0) : 280.0;
+        CGFloat calcW = textSize.width + 36.0;
+        CGFloat width = (calcW < maxW) ? calcW : maxW;
+        CGFloat height = 40.0;
         CGFloat topInset = 60.0;
         if (@available(iOS 11.0, *)) {
-            topInset = keyWindow.safeAreaInsets.top > 0 ? keyWindow.safeAreaInsets.top + 10 : 60.0;
+            if (keyWindow.safeAreaInsets.top > 0) {
+                topInset = keyWindow.safeAreaInsets.top + 10.0;
+            }
         }
-        toast.frame = CGRectMake((keyWindow.bounds.size.width - width) / 2.0, topInset, width, height);
+        toast.frame = CGRectMake((screenWidth - width) / 2.0, topInset, width, height);
         
         [keyWindow addSubview:toast];
         [keyWindow bringSubviewToFront:toast];
@@ -195,6 +200,8 @@ static void ShowGeminiSettingsPopup(void) {
             textField.autocorrectionType = UITextAutocorrectionTypeNo;
         }];
 
+        __weak UIAlertController *weakAlert = alert;
+
         // Nút Bật / Tắt chế độ
         NSString *toggleTitle = isEnabled 
             ? @"⚡ TẮT Gemini ➔ Dùng API GỐC" 
@@ -204,7 +211,7 @@ static void ShowGeminiSettingsPopup(void) {
                                                  style:UIAlertActionStyleDefault
                                                handler:^(UIAlertAction *action) {
             (void)action;
-            NSString *inputKeys = alert.textFields.firstObject.text;
+            NSString *inputKeys = weakAlert.textFields.firstObject.text;
             SaveGeminiSettings(inputKeys, activeModel);
             BOOL newState = !isEnabled;
             SetGeminiEnabled(newState);
@@ -222,7 +229,7 @@ static void ShowGeminiSettingsPopup(void) {
                                                  style:UIAlertActionStyleDefault
                                                handler:^(UIAlertAction *action) {
             (void)action;
-            SaveGeminiSettings(alert.textFields.firstObject.text, kGemini25Model);
+            SaveGeminiSettings(weakAlert.textFields.firstObject.text, kGemini25Model);
             if (sFloatingButton) [sFloatingButton updateAppearance];
             ShowToastMessage(@"Đã chuyển sang Gemini 2.5 Flash Lite");
         }]];
@@ -231,7 +238,7 @@ static void ShowGeminiSettingsPopup(void) {
                                                  style:UIAlertActionStyleDefault
                                                handler:^(UIAlertAction *action) {
             (void)action;
-            SaveGeminiSettings(alert.textFields.firstObject.text, kGemini35Model);
+            SaveGeminiSettings(weakAlert.textFields.firstObject.text, kGemini35Model);
             if (sFloatingButton) [sFloatingButton updateAppearance];
             ShowToastMessage(@"Đã chuyển sang Gemini 3.5 Flash Lite");
         }]];
@@ -241,7 +248,7 @@ static void ShowGeminiSettingsPopup(void) {
                                                  style:UIAlertActionStyleDefault
                                                handler:^(UIAlertAction *action) {
             (void)action;
-            SaveGeminiSettings(alert.textFields.firstObject.text, activeModel);
+            SaveGeminiSettings(weakAlert.textFields.firstObject.text, activeModel);
             if (sFloatingButton) [sFloatingButton updateAppearance];
             ShowToastMessage(@"💾 Đã lưu cấu hình Key");
         }]];
@@ -306,8 +313,9 @@ static void ShowGeminiSettingsPopup(void) {
         SetGeminiEnabled(newState);
         [self updateAppearance];
         
-        if (@available(iOS 10.0, *)) {
-            UIImpactFeedbackGenerator *impact = [[UIImpactFeedbackGenerator alloc] initWithImpactFeedbackStyle:UIImpactFeedbackStyleMedium];
+        Class feedbackClass = NSClassFromString(@"UIImpactFeedbackGenerator");
+        if (feedbackClass) {
+            UIImpactFeedbackGenerator *impact = [[feedbackClass alloc] initWithImpactFeedbackStyle:UIImpactFeedbackStyleMedium];
             [impact impactOccurred];
         }
         
