@@ -21,8 +21,13 @@ static NSString *const kGemini25Model     = @"gemini-2.5-flash-lite";
 static NSString *const kGemini35Model     = @"gemini-3.5-flash-lite";
 
 static NSUInteger sCurrentKeyIndex = 0;
-@class GeminiFloatingButton;
+@interface GeminiFloatingButton : UIButton
+- (void)updateAppearance;
+@end
+
 static __weak GeminiFloatingButton *sFloatingButton = nil;
+static void ShowGeminiSettingsPopup(void);
+static void ShowToastMessage(NSString *message);
 
 // =========================================================================
 // QUẢN LÝ TRẠNG THÁI BẬT/TẮT GEMINI & KEY POOL & MODEL
@@ -251,10 +256,6 @@ static void ShowGeminiSettingsPopup(void) {
 }
 
 // Nút nổi kéo thả trên màn hình
-@interface GeminiFloatingButton : UIButton
-- (void)updateAppearance;
-@end
-
 @implementation GeminiFloatingButton
 
 - (instancetype)initWithFrame:(CGRect)frame {
