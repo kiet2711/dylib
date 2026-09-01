@@ -1,0 +1,4 @@
+EasyComixGemini.m:316:80: error: no visible @interface for 'UIImpactFeedbackGenerator' declares the selector 'initWithImpactFeedbackStyle:'
+  316 |         UIImpactFeedbackGenerator *impact = [[UIImpactFeedbackGenerator alloc] initWithImpactFeedbackStyle:UIImpactFeedbackStyleMedium];
+      |                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+1 error generated.
