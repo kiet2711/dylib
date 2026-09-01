@@ -442,6 +442,60 @@ static NSDictionary *ProQuotaConfigResponse(void) {
     };
 }
 
+/**
+ * Phản hồi Subscriber giả lập RevenueCat v1 (Hiển thị PRO Lifetime trên toàn bộ UI)
+ */
+static NSDictionary *RevenueCatProSubscriberResponse(void) {
+    NSString *futureDate = @"2099-12-31T23:59:59Z";
+    NSString *pastDate   = @"2024-01-01T00:00:00Z";
+    NSString *productId  = @"com.easycomix.pro.yearly";
+    
+    NSDictionary *entitlementInfo = @{
+        @"expires_date": futureDate,
+        @"grace_period_expires_date": [NSNull null],
+        @"product_identifier": productId,
+        @"purchase_date": pastDate
+    };
+    
+    NSDictionary *subscriptionInfo = @{
+        @"billing_issues_detected_at": [NSNull null],
+        @"expires_date": futureDate,
+        @"grace_period_expires_date": [NSNull null],
+        @"is_sandbox": @NO,
+        @"original_purchase_date": pastDate,
+        @"ownership_type": @"PURCHASED",
+        @"period_type": @"normal",
+        @"purchase_date": pastDate,
+        @"store": @"app_store",
+        @"unsubscribe_detected_at": [NSNull null]
+    };
+    
+    return @{
+        @"request_date": @"2026-09-01T05:00:00Z",
+        @"request_date_ms": @1788220800000,
+        @"subscriber": @{
+            @"original_app_user_id": @"$RCAnonymousID:easycomix_gemini_pro",
+            @"original_application_version": @"1.0",
+            @"original_purchase_date": pastDate,
+            @"first_seen": pastDate,
+            @"last_seen": @"2026-09-01T05:00:00Z",
+            @"management_url": @"https://apps.apple.com/account/subscriptions",
+            @"entitlements": @{
+                @"pro": entitlementInfo,
+                @"premium": entitlementInfo,
+                @"easycomix_pro": entitlementInfo,
+                @"full_access": entitlementInfo
+            },
+            @"subscriptions": @{
+                productId: subscriptionInfo,
+                @"com.easycomix.pro.monthly": subscriptionInfo
+            },
+            @"non_subscriptions": @{},
+            @"other_purchases": @{}
+        }
+    };
+}
+
 // Xử lý và tạo Response Dịch thuật cho cả Live và Classic
 static void ProcessTranslatePayload(NSDictionary *payload, void (^completion)(NSDictionary *responseObject)) {
     NSString *source = PayloadString(payload, @[ @"sourceLanguage", @"sourceLang", @"srcLang" ], @"auto");
@@ -575,10 +629,13 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
         return NO;
     }
     NSURL *url = request.URL;
-    if (![[url.host lowercaseString] isEqualToString:@"api.easycomix.app"]) {
-        return NO;
+    NSString *host = [url.host lowercaseString] ?: @"";
+    if ([host isEqualToString:@"api.easycomix.app"] ||
+        [host containsString:@"revenuecat.com"] ||
+        [host containsString:@"8-lives-cat.io"]) {
+        return YES;
     }
-    return YES;
+    return NO;
 }
 
 @interface EasyComixGeminiURLProtocol : NSURLProtocol
@@ -611,8 +668,30 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
 }
 
 - (void)startLoading {
+    NSString *host = [self.request.URL.host lowercaseString] ?: @"";
     NSString *path = self.request.URL.path ?: @"";
-    LOG(@"NSURLProtocol intercepted: %@", path);
+    LOG(@"NSURLProtocol intercepted: %@%@", host, path);
+
+    // 0. RevenueCat In-App Purchase Fake (Kích hoạt hiển thị gói PRO vĩnh viễn trên UI)
+    if ([host containsString:@"revenuecat.com"] || [host containsString:@"8-lives-cat.io"]) {
+        if ([path containsString:@"/product_entitlement_mapping"]) {
+            [self finishWithJSONObject:@{
+                @"product_entitlement_mapping": @{
+                    @"com.easycomix.pro.yearly": @{
+                        @"product_identifier": @"com.easycomix.pro.yearly",
+                        @"entitlements": @[ @"pro", @"premium", @"easycomix_pro", @"full_access" ]
+                    },
+                    @"com.easycomix.pro.monthly": @{
+                        @"product_identifier": @"com.easycomix.pro.monthly",
+                        @"entitlements": @[ @"pro", @"premium", @"easycomix_pro", @"full_access" ]
+                    }
+                }
+            }];
+            return;
+        }
+        [self finishWithJSONObject:RevenueCatProSubscriberResponse()];
+        return;
+    }
 
     // 1. Cấu hình hạn mức (Quota Config)
     if ([path isEqualToString:@"/api/v1/translate/quota/config"]) {
@@ -727,6 +806,61 @@ static void SwizzleClassMethod(Class cls, SEL origSel, SEL newSel) {
 @end
 
 // =========================================================================
+// HOOK RUNTIME REVENUECAT & SUBSCRIPTION
+// =========================================================================
+
+static NSSet *Hook_activeSubscriptions(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return [NSSet setWithObjects:@"com.easycomix.pro.yearly", @"com.easycomix.pro.monthly", nil];
+}
+
+static NSSet *Hook_allPurchasedProductIdentifiers(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return [NSSet setWithObjects:@"com.easycomix.pro.yearly", @"com.easycomix.pro.monthly", nil];
+}
+
+static NSDate *Hook_latestExpirationDate(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return [NSDate dateWithTimeIntervalSince1970:4102444800]; // 2100-01-01
+}
+
+static BOOL Hook_isTrue(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return YES;
+}
+
+static NSDate *Hook_distantFutureDate(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return [NSDate dateWithTimeIntervalSince1970:4102444800];
+}
+
+static void HookRevenueCatClasses(void) {
+    NSArray *customerInfoClasses = @[ @"RCCustomerInfo", @"_TtC10RevenueCat12CustomerInfo" ];
+    for (NSString *className in customerInfoClasses) {
+        Class cls = NSClassFromString(className);
+        if (cls) {
+            class_replaceMethod(cls, sel_registerName("activeSubscriptions"), (IMP)Hook_activeSubscriptions, "@@:");
+            class_replaceMethod(cls, sel_registerName("allPurchasedProductIdentifiers"), (IMP)Hook_allPurchasedProductIdentifiers, "@@:");
+            class_replaceMethod(cls, sel_registerName("latestExpirationDate"), (IMP)Hook_latestExpirationDate, "@@:");
+            LOG(@"Đã hook %@ (activeSubscriptions, allPurchasedProductIdentifiers, latestExpirationDate)", className);
+        }
+    }
+    
+    NSArray *entitlementInfoClasses = @[ @"RCEntitlementInfo", @"_TtC10RevenueCat15EntitlementInfo" ];
+    for (NSString *className in entitlementInfoClasses) {
+        Class cls = NSClassFromString(className);
+        if (cls) {
+            class_replaceMethod(cls, sel_registerName("isActive"), (IMP)Hook_isTrue, "B@:");
+            class_replaceMethod(cls, sel_registerName("willRenew"), (IMP)Hook_isTrue, "B@:");
+            class_replaceMethod(cls, sel_registerName("isActiveInAnyEnvironment"), (IMP)Hook_isTrue, "B@:");
+            class_replaceMethod(cls, sel_registerName("isActiveInCurrentEnvironment"), (IMP)Hook_isTrue, "B@:");
+            class_replaceMethod(cls, sel_registerName("expirationDate"), (IMP)Hook_distantFutureDate, "@@:");
+            LOG(@"Đã hook %@ (isActive, willRenew, expirationDate)", className);
+        }
+    }
+}
+
+// =========================================================================
 // KHỞI TẠO TWEAK: GỠ BỎ GIỚI HẠN & KÍCH HOẠT PRO VĨNH VIỄN
 // =========================================================================
 
@@ -742,6 +876,9 @@ static void InitEasyComixGeminiHook(void) {
         }
     }
     [[NSUserDefaults standardUserDefaults] synchronize];
+    
+    // Hook RevenueCat Runtime
+    HookRevenueCatClasses();
     
     // Đăng ký NSURLProtocol
     [NSURLProtocol registerClass:[EasyComixGeminiURLProtocol class]];
