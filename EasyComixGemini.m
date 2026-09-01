@@ -313,11 +313,8 @@ static void ShowGeminiSettingsPopup(void) {
         SetGeminiEnabled(newState);
         [self updateAppearance];
         
-        Class feedbackClass = NSClassFromString(@"UIImpactFeedbackGenerator");
-        if (feedbackClass) {
-            UIImpactFeedbackGenerator *impact = [[feedbackClass alloc] initWithImpactFeedbackStyle:UIImpactFeedbackStyleMedium];
-            [impact impactOccurred];
-        }
+        UIImpactFeedbackGenerator *impact = [[UIImpactFeedbackGenerator alloc] initWithImpactFeedbackStyle:UIImpactFeedbackStyleMedium];
+        [impact impactOccurred];
         
         if (newState) {
             ShowToastMessage(@"🟢 Đã BẬT dịch Gemini AI");
