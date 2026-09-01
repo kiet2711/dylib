@@ -14,16 +14,31 @@
 
 #define LOG(fmt, ...) NSLog(@"[EasyComixGemini] " fmt, ##__VA_ARGS__)
 
-static NSString *const kGeminiKeysPref  = @"EasyComix_Gemini_Key_Pool";
-static NSString *const kGeminiModelPref = @"EasyComix_Gemini_Model_Name";
-static NSString *const kGemini25Model   = @"gemini-2.5-flash-lite";
-static NSString *const kGemini35Model   = @"gemini-3.5-flash-lite";
+static NSString *const kGeminiKeysPref    = @"EasyComix_Gemini_Key_Pool";
+static NSString *const kGeminiModelPref   = @"EasyComix_Gemini_Model_Name";
+static NSString *const kGeminiEnabledPref = @"EasyComix_Gemini_Enabled";
+static NSString *const kGemini25Model     = @"gemini-2.5-flash-lite";
+static NSString *const kGemini35Model     = @"gemini-3.5-flash-lite";
 
 static NSUInteger sCurrentKeyIndex = 0;
+@class GeminiFloatingButton;
+static __weak GeminiFloatingButton *sFloatingButton = nil;
 
 // =========================================================================
-// QUẢN LÝ KEY POOL & MODEL
+// QUẢN LÝ TRẠNG THÁI BẬT/TẮT GEMINI & KEY POOL & MODEL
 // =========================================================================
+
+static BOOL IsGeminiEnabled(void) {
+    id val = [[NSUserDefaults standardUserDefaults] objectForKey:kGeminiEnabledPref];
+    if (val == nil) return YES; // Mặc định bật dịch Gemini
+    return [val boolValue];
+}
+
+static void SetGeminiEnabled(BOOL enabled) {
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kGeminiEnabledPref];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    LOG(@"Trạng thái Gemini: %@", enabled ? @"BẬT (Gemini AI)" : @"TẮT (Dùng API Gốc EasyComix)");
+}
 
 static NSArray<NSString *> *GetGeminiKeyPool(void) {
     NSString *rawKeys = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiKeysPref];
@@ -76,8 +91,61 @@ static void SaveGeminiSettings(NSString *rawKeys, NSString *model) {
 }
 
 // =========================================================================
-// GIAO DIỆN CÀI ĐẶT: POPUP NHẬP NHIỀU KEY & NÚT NỔI
+// THÔNG BÁO TOAST & GIAO DIỆN CÀI ĐẶT
 // =========================================================================
+
+static void ShowToastMessage(NSString *message) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *keyWindow = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if ([w isKeyWindow]) {
+                keyWindow = w;
+                break;
+            }
+        }
+        if (!keyWindow) keyWindow = [UIApplication sharedApplication].windows.firstObject;
+        if (!keyWindow) return;
+        
+        UILabel *toast = [[UILabel alloc] init];
+        toast.text = message;
+        toast.textColor = [UIColor whiteColor];
+        toast.backgroundColor = [UIColor colorWithRed:0.12 green:0.14 blue:0.18 alpha:0.95];
+        toast.textAlignment = NSTextAlignmentCenter;
+        toast.font = [UIFont boldSystemFontOfSize:13.5];
+        toast.layer.cornerRadius = 18;
+        toast.layer.shadowColor = [UIColor blackColor].CGColor;
+        toast.layer.shadowOffset = CGSizeMake(0, 3);
+        toast.layer.shadowRadius = 6;
+        toast.layer.shadowOpacity = 0.3;
+        toast.clipsToBounds = YES;
+        toast.alpha = 0.0;
+        toast.numberOfLines = 2;
+        
+        CGSize textSize = [message sizeWithAttributes:@{NSFontAttributeName: toast.font}];
+        CGFloat width = MIN(textSize.width + 36, keyWindow.bounds.size.width - 40);
+        CGFloat height = 40;
+        CGFloat topInset = 60.0;
+        if (@available(iOS 11.0, *)) {
+            topInset = keyWindow.safeAreaInsets.top > 0 ? keyWindow.safeAreaInsets.top + 10 : 60.0;
+        }
+        toast.frame = CGRectMake((keyWindow.bounds.size.width - width) / 2.0, topInset, width, height);
+        
+        [keyWindow addSubview:toast];
+        [keyWindow bringSubviewToFront:toast];
+        
+        [UIView animateWithDuration:0.25 animations:^{
+            toast.alpha = 1.0;
+            toast.transform = CGAffineTransformMakeTranslation(0, 6);
+        } completion:^(BOOL finished) {
+            [UIView animateWithDuration:0.25 delay:1.8 options:0 animations:^{
+                toast.alpha = 0.0;
+                toast.transform = CGAffineTransformIdentity;
+            } completion:^(BOOL finished) {
+                [toast removeFromSuperview];
+            }];
+        }];
+    });
+}
 
 static void ShowGeminiSettingsPopup(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -94,12 +162,23 @@ static void ShowGeminiSettingsPopup(void) {
             topVC = topVC.presentedViewController;
         }
         
+        BOOL isEnabled = IsGeminiEnabled();
         NSArray *currentKeys = GetGeminiKeyPool();
         NSString *currentKeysText = [[NSUserDefaults standardUserDefaults] stringForKey:kGeminiKeysPref] ?: @"";
         NSString *activeModel = GetSavedGeminiModel();
-        NSString *message = [NSString stringWithFormat:@"Đang có %lu API key.\nModel đang dùng: %@\nDán nhiều key, phân cách bằng dấu phẩy hoặc xuống dòng để tự động xoay key khi quá tải.", (unsigned long)[currentKeys count], activeModel];
         
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🤖 Gemini Key Pool & Model"
+        NSString *statusLine = isEnabled
+            ? [NSString stringWithFormat:@"🟢 Chế độ: GEMINI AI (%@)", activeModel]
+            : @"⚡ Chế độ: API GỐC (EasyComix Server)";
+            
+        NSString *message = [NSString stringWithFormat:
+            @"%@\n"
+            @"Số lượng Key: %lu API key.\n"
+            @"💡 Mẹo: Nhấn giữ nút nổi để Bật/Tắt nhanh.",
+            statusLine,
+            (unsigned long)[currentKeys count]];
+        
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"⚙️ Cài Đặt Dịch Thuật"
                                                                        message:message
                                                                 preferredStyle:UIAlertControllerStyleAlert];
         
@@ -111,6 +190,24 @@ static void ShowGeminiSettingsPopup(void) {
             textField.autocorrectionType = UITextAutocorrectionTypeNo;
         }];
 
+        // Nút Bật / Tắt chế độ
+        NSString *toggleTitle = isEnabled 
+            ? @"⚡ TẮT Gemini ➔ Dùng API GỐC" 
+            : @"🟢 BẬT Dịch bằng GEMINI AI";
+            
+        [alert addAction:[UIAlertAction actionWithTitle:toggleTitle
+                                                 style:UIAlertActionStyleDefault
+                                               handler:^(UIAlertAction *action) {
+            (void)action;
+            NSString *inputKeys = alert.textFields.firstObject.text;
+            SaveGeminiSettings(inputKeys, activeModel);
+            BOOL newState = !isEnabled;
+            SetGeminiEnabled(newState);
+            if (sFloatingButton) [sFloatingButton updateAppearance];
+            ShowToastMessage(newState ? @"🟢 Đã BẬT dịch Gemini AI" : @"⚡ Đã chuyển sang API GỐC");
+        }]];
+
+        // Lựa chọn Model
         NSString *title25 = [activeModel isEqualToString:kGemini25Model]
             ? @"✓ Gemini 2.5 Flash Lite" : @"Gemini 2.5 Flash Lite";
         NSString *title35 = [activeModel isEqualToString:kGemini35Model]
@@ -121,6 +218,8 @@ static void ShowGeminiSettingsPopup(void) {
                                                handler:^(UIAlertAction *action) {
             (void)action;
             SaveGeminiSettings(alert.textFields.firstObject.text, kGemini25Model);
+            if (sFloatingButton) [sFloatingButton updateAppearance];
+            ShowToastMessage(@"Đã chuyển sang Gemini 2.5 Flash Lite");
         }]];
 
         [alert addAction:[UIAlertAction actionWithTitle:title35
@@ -128,6 +227,18 @@ static void ShowGeminiSettingsPopup(void) {
                                                handler:^(UIAlertAction *action) {
             (void)action;
             SaveGeminiSettings(alert.textFields.firstObject.text, kGemini35Model);
+            if (sFloatingButton) [sFloatingButton updateAppearance];
+            ShowToastMessage(@"Đã chuyển sang Gemini 3.5 Flash Lite");
+        }]];
+        
+        // Nút Lưu Key & Đóng
+        [alert addAction:[UIAlertAction actionWithTitle:@"💾 Lưu Key & Đóng"
+                                                 style:UIAlertActionStyleDefault
+                                               handler:^(UIAlertAction *action) {
+            (void)action;
+            SaveGeminiSettings(alert.textFields.firstObject.text, activeModel);
+            if (sFloatingButton) [sFloatingButton updateAppearance];
+            ShowToastMessage(@"💾 Đã lưu cấu hình Key");
         }]];
         
         UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Đóng"
@@ -141,15 +252,17 @@ static void ShowGeminiSettingsPopup(void) {
 
 // Nút nổi kéo thả trên màn hình
 @interface GeminiFloatingButton : UIButton
+- (void)updateAppearance;
 @end
 
 @implementation GeminiFloatingButton
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (self = [super initWithFrame:frame]) {
-        self.backgroundColor = [UIColor colorWithRed:0.08 green:0.52 blue:1.0 alpha:0.92];
-        [self setTitle:@"🤖 Key" forState:UIControlStateNormal];
-        self.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+        sFloatingButton = self;
+        self.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+        self.titleLabel.numberOfLines = 2;
+        self.titleLabel.textAlignment = NSTextAlignmentCenter;
         self.layer.cornerRadius = frame.size.width / 2.0;
         self.layer.shadowColor = [UIColor blackColor].CGColor;
         self.layer.shadowOffset = CGSizeMake(0, 2);
@@ -157,16 +270,52 @@ static void ShowGeminiSettingsPopup(void) {
         self.layer.shadowOpacity = 0.35;
         self.clipsToBounds = NO;
         
+        [self updateAppearance];
+        
         [self addTarget:self action:@selector(buttonTapped) forControlEvents:UIControlEventTouchUpInside];
         
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
         [self addGestureRecognizer:pan];
+        
+        UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
+        longPress.minimumPressDuration = 0.6;
+        [self addGestureRecognizer:longPress];
     }
     return self;
 }
 
+- (void)updateAppearance {
+    BOOL enabled = IsGeminiEnabled();
+    if (enabled) {
+        self.backgroundColor = [UIColor colorWithRed:0.08 green:0.52 blue:1.0 alpha:0.92]; // Xanh Gemini AI
+        [self setTitle:@"🤖\nAI" forState:UIControlStateNormal];
+    } else {
+        self.backgroundColor = [UIColor colorWithRed:0.42 green:0.48 blue:0.56 alpha:0.92]; // Xám API Gốc
+        [self setTitle:@"⚡\nGốc" forState:UIControlStateNormal];
+    }
+}
+
 - (void)buttonTapped {
     ShowGeminiSettingsPopup();
+}
+
+- (void)handleLongPress:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        BOOL newState = !IsGeminiEnabled();
+        SetGeminiEnabled(newState);
+        [self updateAppearance];
+        
+        if (@available(iOS 10.0, *)) {
+            UIImpactFeedbackGenerator *impact = [[UIImpactFeedbackGenerator alloc] initWithImpactFeedbackStyle:UIImpactFeedbackStyleMedium];
+            [impact impactOccurred];
+        }
+        
+        if (newState) {
+            ShowToastMessage(@"🟢 Đã BẬT dịch Gemini AI");
+        } else {
+            ShowToastMessage(@"⚡ Đã TẮT Gemini ➔ Dùng API GỐC");
+        }
+    }
 }
 
 - (void)handlePan:(UIPanGestureRecognizer *)pan {
@@ -636,6 +785,14 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     }
     NSURL *url = request.URL;
     NSString *host = [url.host lowercaseString] ?: @"";
+    NSString *path = [url.path lowercaseString] ?: @"";
+    
+    // Nếu Gemini bị TẮT và đây là request dịch thuật (nhưng không phải quota) -> Cho qua để app gọi API gốc
+    if (!IsGeminiEnabled() && [path hasPrefix:@"/api/v1/translate"] && ![path hasPrefix:@"/api/v1/translate/quota"]) {
+        LOG(@"[API GỐC] Bỏ qua chặn request dịch, gửi trực tiếp tới server gốc: %@", path);
+        return NO;
+    }
+    
     if ([host isEqualToString:@"api.easycomix.app"] ||
         [host containsString:@"revenuecat.com"] ||
         [host containsString:@"8-lives-cat.io"]) {
