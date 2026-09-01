@@ -442,92 +442,7 @@ static NSDictionary *ProQuotaConfigResponse(void) {
     };
 }
 
-/**
- * Phản hồi User & Session giả lập Supabase (Bỏ qua hoàn toàn đăng nhập)
- */
-static NSDictionary *SupabaseProUserDict(void) {
-    NSString *userId = @"00000000-0000-0000-0000-000000000001";
-    NSString *pastDate = @"2024-01-01T00:00:00Z";
-    NSString *nowDate = @"2026-09-01T00:00:00Z";
-    
-    return @{
-        @"id": userId,
-        @"aud": @"authenticated",
-        @"role": @"authenticated",
-        @"email": @"geminipro@easycomix.app",
-        @"email_confirmed_at": pastDate,
-        @"phone": @"",
-        @"last_sign_in_at": nowDate,
-        @"app_metadata": @{
-            @"provider": @"email",
-            @"providers": @[ @"email" ]
-        },
-        @"user_metadata": @{
-            @"name": @"EasyComix PRO User",
-            @"email": @"geminipro@easycomix.app"
-        },
-        @"identities": @[
-            @{
-                @"identity_id": userId,
-                @"id": userId,
-                @"user_id": userId,
-                @"identity_data": @{
-                    @"email": @"geminipro@easycomix.app",
-                    @"sub": userId
-                },
-                @"provider": @"email",
-                @"last_sign_in_at": nowDate,
-                @"created_at": pastDate,
-                @"updated_at": nowDate
-            }
-        ],
-        @"created_at": pastDate,
-        @"updated_at": nowDate,
-        @"is_anonymous": @NO
-    };
-}
 
-static NSDictionary *SupabaseProSessionResponse(void) {
-    NSString *fakeJwt = @"eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAic3VwYWJhc2UiLCAicmVmIjogInltem93anVzY2Nya3BpaXJqempjIiwgInN1YiI6ICIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCAiYXVkIjogImF1dGhlbnRpY2F0ZWQiLCAicm9sZSI6ICJhdXRoZW50aWNhdGVkIiwgImVtYWlsIjogImdlbWluaXByb0BlYXN5Y29taXguYXBwIiwgImFwcF9tZXRhZGF0YSI6IHsicHJvdmlkZXIiOiAiZW1haWwiLCAicHJvdmlkZXJzIjogWyJlbWFpbCJdfSwgInVzZXJfbWV0YWRhdGEiOiB7Im5hbWUiOiAiRWFzeUNvbWl4IFBSTyIsICJlbWFpbCI6ICJnZW1pbmlwcm9AZWFzeWNvbWl4LmFwcCJ9LCAiaWF0IjogMTc4ODI0MjgxOSwgImV4cCI6IDIxMDM2MDI4MTl9.fake_signature";
-    
-    return @{
-        @"access_token": fakeJwt,
-        @"token_type": @"bearer",
-        @"expires_in": @315360000,
-        @"expires_at": @2103602819,
-        @"refresh_token": @"fake_refresh_token_gemini_pro",
-        @"user": SupabaseProUserDict()
-    };
-}
-
-static NSArray *SupabaseProProfilesArray(void) {
-    return @[
-        @{
-            @"id": @"00000000-0000-0000-0000-000000000001",
-            @"user_id": @"00000000-0000-0000-0000-000000000001",
-            @"email": @"geminipro@easycomix.app",
-            @"is_pro": @YES,
-            @"tier": @"pro",
-            @"timezone_offset": @7,
-            @"created_at": @"2024-01-01T00:00:00Z",
-            @"updated_at": @"2026-09-01T00:00:00Z"
-        }
-    ];
-}
-
-static void InjectFakeSupabaseSession(void) {
-    NSDictionary *session = SupabaseProSessionResponse();
-    NSData *sessionData = [NSJSONSerialization dataWithJSONObject:session options:0 error:nil];
-    NSString *sessionString = [[NSString alloc] initWithData:sessionData encoding:NSUTF8StringEncoding];
-    
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setObject:sessionData forKey:@"supabase.session"];
-    [defaults setObject:sessionString forKey:@"supabase.auth.token"];
-    [defaults setObject:sessionData forKey:@"supabase.gotrue.swift"];
-    [defaults setObject:sessionData forKey:@"supabase.auth"];
-    [defaults synchronize];
-    LOG(@"Đã tự động nạp Supabase PRO Session vào UserDefaults.");
-}
 
 /**
  * Phản hồi Subscriber giả lập RevenueCat v1 (Hiển thị PRO Lifetime trên toàn bộ UI)
@@ -560,6 +475,9 @@ static NSDictionary *RevenueCatProSubscriberResponse(void) {
     return @{
         @"request_date": @"2026-09-01T05:00:00Z",
         @"request_date_ms": @1788220800000,
+        @"entitlement_verification": @1,
+        @"schema_version": @"3",
+        @"original_source": @"main",
         @"subscriber": @{
             @"original_app_user_id": @"$RCAnonymousID:easycomix_gemini_pro",
             @"original_application_version": @"1.0",
@@ -568,6 +486,7 @@ static NSDictionary *RevenueCatProSubscriberResponse(void) {
             @"last_seen": @"2026-09-01T05:00:00Z",
             @"management_url": @"https://apps.apple.com/account/subscriptions",
             @"entitlements": @{
+                @"EasyComix Pro": entitlementInfo,
                 @"pro": entitlementInfo,
                 @"premium": entitlementInfo,
                 @"easycomix_pro": entitlementInfo,
@@ -719,8 +638,7 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     NSString *host = [url.host lowercaseString] ?: @"";
     if ([host isEqualToString:@"api.easycomix.app"] ||
         [host containsString:@"revenuecat.com"] ||
-        [host containsString:@"8-lives-cat.io"] ||
-        [host containsString:@"supabase.co"]) {
+        [host containsString:@"8-lives-cat.io"]) {
         return YES;
     }
     return NO;
@@ -775,40 +693,18 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     NSString *path = self.request.URL.path ?: @"";
     LOG(@"NSURLProtocol intercepted: %@%@", host, path);
 
-    // 0. SUPABASE AUTH & PROFILES (BỎ HOÀN TOÀN ĐĂNG NHẬP & TỰ ĐỘNG ĐĂNG NHẬP PRO)
-    if ([host containsString:@"supabase.co"]) {
-        if ([path containsString:@"/auth/v1/user"]) {
-            [self finishWithJSONObject:SupabaseProUserDict()];
-            return;
-        }
-        if ([path containsString:@"/auth/v1/token"] || [path containsString:@"/auth/v1/session"]) {
-            [self finishWithJSONObject:SupabaseProSessionResponse()];
-            return;
-        }
-        if ([path containsString:@"/rest/v1/profiles"] || [path containsString:@"/rest/v1/user_profiles"]) {
-            [self finishWithJSONArray:SupabaseProProfilesArray()];
-            return;
-        }
-        if ([path containsString:@"/auth/v1/logout"] || [path containsString:@"/auth/v1/signout"]) {
-            [self finishWithJSONObject:@{}];
-            return;
-        }
-        [self finishWithJSONObject:SupabaseProSessionResponse()];
-        return;
-    }
-
-    // 1. REVENUECAT IN-APP PURCHASE FAKE (HIỂN THỊ PRO LIFETIME TRÊN UI)
+    // 0. REVENUECAT IN-APP PURCHASE FAKE (HIỂN THỊ PRO LIFETIME TRÊN UI)
     if ([host containsString:@"revenuecat.com"] || [host containsString:@"8-lives-cat.io"]) {
         if ([path containsString:@"/product_entitlement_mapping"]) {
             [self finishWithJSONObject:@{
                 @"product_entitlement_mapping": @{
                     @"com.easycomix.pro.yearly": @{
                         @"product_identifier": @"com.easycomix.pro.yearly",
-                        @"entitlements": @[ @"pro", @"premium", @"easycomix_pro", @"full_access" ]
+                        @"entitlements": @[ @"EasyComix Pro", @"pro", @"premium", @"easycomix_pro", @"full_access" ]
                     },
                     @"com.easycomix.pro.monthly": @{
                         @"product_identifier": @"com.easycomix.pro.monthly",
-                        @"entitlements": @[ @"pro", @"premium", @"easycomix_pro", @"full_access" ]
+                        @"entitlements": @[ @"EasyComix Pro", @"pro", @"premium", @"easycomix_pro", @"full_access" ]
                     }
                 }
             }];
@@ -982,6 +878,21 @@ static BOOL Hook_isTrue(id self, SEL _cmd) {
     return YES;
 }
 
+static NSInteger Hook_verification(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return 1; // Verified
+}
+
+static NSString *Hook_productIdentifier(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return @"com.easycomix.pro.yearly";
+}
+
+static NSString *Hook_entitlementIdentifier(id self, SEL _cmd) {
+    (void)self; (void)_cmd;
+    return @"EasyComix Pro";
+}
+
 static NSDate *Hook_distantFutureDate(id self, SEL _cmd) {
     (void)self; (void)_cmd;
     return [NSDate dateWithTimeIntervalSince1970:4102444800];
@@ -995,7 +906,8 @@ static void HookRevenueCatClasses(void) {
             class_replaceMethod(cls, sel_registerName("activeSubscriptions"), (IMP)Hook_activeSubscriptions, "@@:");
             class_replaceMethod(cls, sel_registerName("allPurchasedProductIdentifiers"), (IMP)Hook_allPurchasedProductIdentifiers, "@@:");
             class_replaceMethod(cls, sel_registerName("latestExpirationDate"), (IMP)Hook_latestExpirationDate, "@@:");
-            LOG(@"Đã hook %@ (activeSubscriptions, allPurchasedProductIdentifiers, latestExpirationDate)", className);
+            class_replaceMethod(cls, sel_registerName("entitlementVerification"), (IMP)Hook_verification, "q@:");
+            LOG(@"Đã hook %@ (activeSubscriptions, allPurchasedProductIdentifiers, latestExpirationDate, entitlementVerification)", className);
         }
     }
     
@@ -1008,7 +920,10 @@ static void HookRevenueCatClasses(void) {
             class_replaceMethod(cls, sel_registerName("isActiveInAnyEnvironment"), (IMP)Hook_isTrue, "B@:");
             class_replaceMethod(cls, sel_registerName("isActiveInCurrentEnvironment"), (IMP)Hook_isTrue, "B@:");
             class_replaceMethod(cls, sel_registerName("expirationDate"), (IMP)Hook_distantFutureDate, "@@:");
-            LOG(@"Đã hook %@ (isActive, willRenew, expirationDate)", className);
+            class_replaceMethod(cls, sel_registerName("verification"), (IMP)Hook_verification, "q@:");
+            class_replaceMethod(cls, sel_registerName("productIdentifier"), (IMP)Hook_productIdentifier, "@@:");
+            class_replaceMethod(cls, sel_registerName("identifier"), (IMP)Hook_entitlementIdentifier, "@@:");
+            LOG(@"Đã hook %@ (isActive, willRenew, expirationDate, verification, productIdentifier, identifier)", className);
         }
     }
 }
@@ -1030,8 +945,17 @@ static void InitEasyComixGeminiHook(void) {
     }
     [[NSUserDefaults standardUserDefaults] synchronize];
     
-    // Tự động nạp sẵn phiên đăng nhập Supabase PRO
-    InjectFakeSupabaseSession();
+    // Xóa cache RevenueCat cũ bị lỗi verification để nạp mới
+    NSUserDefaults *rcDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.revenuecat.user_defaults"];
+    if (rcDefaults) {
+        NSDictionary *rcDict = [rcDefaults dictionaryRepresentation];
+        for (NSString *k in [rcDict allKeys]) {
+            if ([k containsString:@"purchaserInfo"] || [k containsString:@"PurchaserInfo"]) {
+                [rcDefaults removeObjectForKey:k];
+            }
+        }
+        [rcDefaults synchronize];
+    }
     
     // Hook RevenueCat Runtime
     HookRevenueCatClasses();
