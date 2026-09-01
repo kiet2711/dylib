@@ -443,6 +443,93 @@ static NSDictionary *ProQuotaConfigResponse(void) {
 }
 
 /**
+ * Phản hồi User & Session giả lập Supabase (Bỏ qua hoàn toàn đăng nhập)
+ */
+static NSDictionary *SupabaseProUserDict(void) {
+    NSString *userId = @"00000000-0000-0000-0000-000000000001";
+    NSString *pastDate = @"2024-01-01T00:00:00Z";
+    NSString *nowDate = @"2026-09-01T00:00:00Z";
+    
+    return @{
+        @"id": userId,
+        @"aud": @"authenticated",
+        @"role": @"authenticated",
+        @"email": @"geminipro@easycomix.app",
+        @"email_confirmed_at": pastDate,
+        @"phone": @"",
+        @"last_sign_in_at": nowDate,
+        @"app_metadata": @{
+            @"provider": @"email",
+            @"providers": @[ @"email" ]
+        },
+        @"user_metadata": @{
+            @"name": @"EasyComix PRO User",
+            @"email": @"geminipro@easycomix.app"
+        },
+        @"identities": @[
+            @{
+                @"identity_id": userId,
+                @"id": userId,
+                @"user_id": userId,
+                @"identity_data": @{
+                    @"email": @"geminipro@easycomix.app",
+                    @"sub": userId
+                },
+                @"provider": @"email",
+                @"last_sign_in_at": nowDate,
+                @"created_at": pastDate,
+                @"updated_at": nowDate
+            }
+        ],
+        @"created_at": pastDate,
+        @"updated_at": nowDate,
+        @"is_anonymous": @NO
+    };
+}
+
+static NSDictionary *SupabaseProSessionResponse(void) {
+    NSString *fakeJwt = @"eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAic3VwYWJhc2UiLCAicmVmIjogInltem93anVzY2Nya3BpaXJqempjIiwgInN1YiI6ICIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCAiYXVkIjogImF1dGhlbnRpY2F0ZWQiLCAicm9sZSI6ICJhdXRoZW50aWNhdGVkIiwgImVtYWlsIjogImdlbWluaXByb0BlYXN5Y29taXguYXBwIiwgImFwcF9tZXRhZGF0YSI6IHsicHJvdmlkZXIiOiAiZW1haWwiLCAicHJvdmlkZXJzIjogWyJlbWFpbCJdfSwgInVzZXJfbWV0YWRhdGEiOiB7Im5hbWUiOiAiRWFzeUNvbWl4IFBSTyIsICJlbWFpbCI6ICJnZW1pbmlwcm9AZWFzeWNvbWl4LmFwcCJ9LCAiaWF0IjogMTc4ODI0MjgxOSwgImV4cCI6IDIxMDM2MDI4MTl9.fake_signature";
+    
+    return @{
+        @"access_token": fakeJwt,
+        @"token_type": @"bearer",
+        @"expires_in": @315360000,
+        @"expires_at": @2103602819,
+        @"refresh_token": @"fake_refresh_token_gemini_pro",
+        @"user": SupabaseProUserDict()
+    };
+}
+
+static NSArray *SupabaseProProfilesArray(void) {
+    return @[
+        @{
+            @"id": @"00000000-0000-0000-0000-000000000001",
+            @"user_id": @"00000000-0000-0000-0000-000000000001",
+            @"email": @"geminipro@easycomix.app",
+            @"is_pro": @YES,
+            @"tier": @"pro",
+            @"timezone_offset": @7,
+            @"created_at": @"2024-01-01T00:00:00Z",
+            @"updated_at": @"2026-09-01T00:00:00Z"
+        }
+    ];
+}
+
+static void InjectFakeSupabaseSession(void) {
+    NSDictionary *session = SupabaseProSessionResponse();
+    NSData *sessionData = [NSJSONSerialization dataWithJSONObject:session options:0 error:nil];
+    NSString *sessionString = [[NSString alloc] initWithData:sessionData encoding:NSUTF8StringEncoding];
+    
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setObject:sessionData forKey:@"supabase.session"];
+    [defaults setObject:sessionString forKey:@"supabase.auth.token"];
+    [defaults setObject:sessionData forKey:@"supabase.gotrue.swift"];
+    [defaults setObject:sessionData forKey:@"supabase.auth"];
+    [defaults synchronize];
+    LOG(@"Đã tự động nạp Supabase PRO Session vào UserDefaults.");
+}
+
+/**
  * Phản hồi Subscriber giả lập RevenueCat v1 (Hiển thị PRO Lifetime trên toàn bộ UI)
  */
 static NSDictionary *RevenueCatProSubscriberResponse(void) {
@@ -632,7 +719,8 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     NSString *host = [url.host lowercaseString] ?: @"";
     if ([host isEqualToString:@"api.easycomix.app"] ||
         [host containsString:@"revenuecat.com"] ||
-        [host containsString:@"8-lives-cat.io"]) {
+        [host containsString:@"8-lives-cat.io"] ||
+        [host containsString:@"supabase.co"]) {
         return YES;
     }
     return NO;
@@ -667,12 +755,49 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     [self.client URLProtocolDidFinishLoading:self];
 }
 
+- (void)finishWithJSONArray:(NSArray *)array {
+    if (self.ecStopped) return;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:array options:0 error:nil];
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL
+                                                              statusCode:200
+                                                             HTTPVersion:@"HTTP/1.1"
+                                                            headerFields:@{
+                                                                @"Content-Type": @"application/json; charset=utf-8",
+                                                                @"Access-Control-Allow-Origin": @"*"
+                                                            }];
+    [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    [self.client URLProtocol:self didLoadData:data];
+    [self.client URLProtocolDidFinishLoading:self];
+}
+
 - (void)startLoading {
     NSString *host = [self.request.URL.host lowercaseString] ?: @"";
     NSString *path = self.request.URL.path ?: @"";
     LOG(@"NSURLProtocol intercepted: %@%@", host, path);
 
-    // 0. RevenueCat In-App Purchase Fake (Kích hoạt hiển thị gói PRO vĩnh viễn trên UI)
+    // 0. SUPABASE AUTH & PROFILES (BỎ HOÀN TOÀN ĐĂNG NHẬP & TỰ ĐỘNG ĐĂNG NHẬP PRO)
+    if ([host containsString:@"supabase.co"]) {
+        if ([path containsString:@"/auth/v1/user"]) {
+            [self finishWithJSONObject:SupabaseProUserDict()];
+            return;
+        }
+        if ([path containsString:@"/auth/v1/token"] || [path containsString:@"/auth/v1/session"]) {
+            [self finishWithJSONObject:SupabaseProSessionResponse()];
+            return;
+        }
+        if ([path containsString:@"/rest/v1/profiles"] || [path containsString:@"/rest/v1/user_profiles"]) {
+            [self finishWithJSONArray:SupabaseProProfilesArray()];
+            return;
+        }
+        if ([path containsString:@"/auth/v1/logout"] || [path containsString:@"/auth/v1/signout"]) {
+            [self finishWithJSONObject:@{}];
+            return;
+        }
+        [self finishWithJSONObject:SupabaseProSessionResponse()];
+        return;
+    }
+
+    // 1. REVENUECAT IN-APP PURCHASE FAKE (HIỂN THỊ PRO LIFETIME TRÊN UI)
     if ([host containsString:@"revenuecat.com"] || [host containsString:@"8-lives-cat.io"]) {
         if ([path containsString:@"/product_entitlement_mapping"]) {
             [self finishWithJSONObject:@{
@@ -693,19 +818,37 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
         return;
     }
 
-    // 1. Cấu hình hạn mức (Quota Config)
+    // 2. USER PROFILE TRÊN EASYCOMIX BACKEND
+    if ([path containsString:@"/api/v1/user/profile"]) {
+        [self finishWithJSONObject:@{
+            @"success": @YES,
+            @"data": @{
+                @"id": @"00000000-0000-0000-0000-000000000001",
+                @"userId": @"00000000-0000-0000-0000-000000000001",
+                @"email": @"geminipro@easycomix.app",
+                @"isPro": @YES,
+                @"tier": @"pro",
+                @"timezoneOffset": @7,
+                @"createdAt": @"2024-01-01T00:00:00Z",
+                @"updatedAt": @"2026-09-01T00:00:00Z"
+            }
+        }];
+        return;
+    }
+
+    // 3. Cấu hình hạn mức (Quota Config)
     if ([path isEqualToString:@"/api/v1/translate/quota/config"]) {
         [self finishWithJSONObject:ProQuotaConfigResponse()];
         return;
     }
 
-    // 2. Hạn mức hiện tại (Quota Usage)
+    // 4. Hạn mức hiện tại (Quota Usage)
     if ([path isEqualToString:@"/api/v1/translate/quota"]) {
         [self finishWithJSONObject:ProQuotaUsageResponse()];
         return;
     }
 
-    // 3. Quy tắc chặn quảng cáo (Ad Rules)
+    // 5. Quy tắc chặn quảng cáo (Ad Rules)
     if ([path isEqualToString:@"/api/v1/config/ad-rules"]) {
         [self finishWithJSONObject:@{
             @"success": @YES,
@@ -717,7 +860,7 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
         return;
     }
 
-    // 4. Sự kiện ghé thăm trang (Events)
+    // 6. Sự kiện ghé thăm trang (Events)
     if ([path containsString:@"/events/"]) {
         [self finishWithJSONObject:@{
             @"success": @YES,
@@ -726,7 +869,7 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
         return;
     }
 
-    // 5. Endpoint dịch thuật (/api/v1/translate, /api/v1/translate/chapter,...)
+    // 7. Endpoint dịch thuật (/api/v1/translate, /api/v1/translate/chapter,...)
     if ([path hasPrefix:@"/api/v1/translate"]) {
         NSData *bodyData = RequestBodyData(self.request);
         NSDictionary *payload = TranslationPayloadFromBodyData(bodyData);
@@ -801,6 +944,16 @@ static void SwizzleClassMethod(Class cls, SEL origSel, SEL newSel) {
 - (void)hook_viewDidAppear:(BOOL)animated {
     [self hook_viewDidAppear:animated];
     AddFloatingButtonToWindow();
+    
+    NSString *className = NSStringFromClass([self class]);
+    // Nếu màn hình Login hoặc Paywall hoặc TrialFlow hiển thị dạng sheet/modal đè lên reader, tự động đóng nó
+    if ([className containsString:@"LoginView"] ||
+        [className containsString:@"PaywallView"] ||
+        [className containsString:@"TrialFlow"] ||
+        [className containsString:@"PopupViewController"]) {
+        LOG(@"Tự động bỏ qua màn hình chặn đăng nhập / mua gói: %@", className);
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 @end
@@ -877,6 +1030,9 @@ static void InitEasyComixGeminiHook(void) {
     }
     [[NSUserDefaults standardUserDefaults] synchronize];
     
+    // Tự động nạp sẵn phiên đăng nhập Supabase PRO
+    InjectFakeSupabaseSession();
+    
     // Hook RevenueCat Runtime
     HookRevenueCatClasses();
     
@@ -891,7 +1047,7 @@ static void InitEasyComixGeminiHook(void) {
                        @selector(ephemeralSessionConfiguration),
                        @selector(ec_ephemeralSessionConfiguration));
                   
-    // Gắn nút cài đặt nổi trên UI
+    // Gắn nút cài đặt nổi trên UI & Tự động đóng modal chặn
     SwizzleMethod([UIViewController class],
                   @selector(viewDidAppear:),
                   @selector(hook_viewDidAppear:));
