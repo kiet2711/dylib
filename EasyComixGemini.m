@@ -951,7 +951,7 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     }
     NSURL *url = request.URL;
     NSString *host = [url.host lowercaseString] ?: @"";
-    if ([host isEqualToString:@"api.easycomix.app"] ||
+    if ([host containsString:@"easycomix.app"] ||
         [host containsString:@"revenuecat.com"] ||
         [host containsString:@"8-lives-cat.io"]) {
         return YES;
@@ -1034,7 +1034,7 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     }
 
     // 2. USER PROFILE TRÊN EASYCOMIX BACKEND
-    if ([path containsString:@"/api/v1/user/profile"]) {
+    if ([path containsString:@"/user/profile"]) {
         [self finishWithJSONObject:@{
             @"success": @YES,
             @"data": @{
@@ -1052,19 +1052,19 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     }
 
     // 3. Cấu hình hạn mức (Quota Config)
-    if ([path isEqualToString:@"/api/v1/translate/quota/config"]) {
+    if ([path containsString:@"/quota/config"]) {
         [self finishWithJSONObject:ProQuotaConfigResponse()];
         return;
     }
 
     // 4. Hạn mức hiện tại (Quota Usage)
-    if ([path isEqualToString:@"/api/v1/translate/quota"]) {
+    if ([path containsString:@"/quota"]) {
         [self finishWithJSONObject:ProQuotaUsageResponse()];
         return;
     }
 
     // 5. Site Support (Bản 1.0.23 mới)
-    if ([path isEqualToString:@"/api/v1/config/site-support"]) {
+    if ([path containsString:@"/site-support"]) {
         [self finishWithJSONObject:@{
             @"success": @YES,
             @"data": @{
@@ -1076,7 +1076,7 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     }
 
     // 6. Quy tắc chặn quảng cáo (Ad Rules)
-    if ([path isEqualToString:@"/api/v1/config/ad-rules"]) {
+    if ([path containsString:@"/ad-rules"]) {
         [self finishWithJSONObject:@{
             @"success": @YES,
             @"data": @{
@@ -1088,7 +1088,7 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     }
 
     // 7. Whitelist & App Version Config
-    if ([path containsString:@"/whitelist"] || [path containsString:@"/config/app-whitelist"]) {
+    if ([path containsString:@"/whitelist"]) {
         [self finishWithJSONObject:@{
             @"success": @YES,
             @"data": @{
@@ -1098,7 +1098,7 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
         return;
     }
 
-    if ([path containsString:@"/app-version"] || [path containsString:@"/config/app-version"]) {
+    if ([path containsString:@"/app-version"]) {
         [self finishWithJSONObject:@{
             @"success": @YES,
             @"data": @{
@@ -1119,8 +1119,8 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
         return;
     }
 
-    // 9. Endpoint dịch thuật (/api/v1/translate, /api/v1/translate/chapter,...)
-    if ([path hasPrefix:@"/api/v1/translate"]) {
+    // 9. Endpoint dịch thuật (/translate, /translate/chapter, /api/v1/translate,...)
+    if ([path containsString:@"/translate"]) {
         NSData *bodyData = RequestBodyData(self.request);
         NSDictionary *payload = TranslationPayloadFromBodyData(bodyData);
         ProcessTranslatePayload(payload, ^(NSDictionary *responseObject) {
@@ -1182,6 +1182,29 @@ static void SwizzleClassMethod(Class cls, SEL origSel, SEL newSel) {
     NSURLSessionConfiguration *configuration = [self ec_ephemeralSessionConfiguration];
     PrependGeminiProtocol(configuration);
     return configuration;
+}
+
+@end
+
+@interface NSURLSession (EasyComixGeminiSession)
++ (NSURLSession *)ec_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration
+                                     delegate:(id<NSURLSessionDelegate>)delegate
+                                delegateQueue:(NSOperationQueue *)queue;
++ (NSURLSession *)ec_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration;
+@end
+
+@implementation NSURLSession (EasyComixGeminiSession)
+
++ (NSURLSession *)ec_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration
+                                     delegate:(id<NSURLSessionDelegate>)delegate
+                                delegateQueue:(NSOperationQueue *)queue {
+    PrependGeminiProtocol(configuration);
+    return [self ec_sessionWithConfiguration:configuration delegate:delegate delegateQueue:queue];
+}
+
++ (NSURLSession *)ec_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration {
+    PrependGeminiProtocol(configuration);
+    return [self ec_sessionWithConfiguration:configuration];
 }
 
 @end
@@ -1290,16 +1313,6 @@ static void HookRevenueCatClasses(void) {
 // =========================================================================
 // FISHHOOK: REBIND DYNAMIC SYMBOLS CHO CRYPTOKIT & ANTI-TAMPER BYPASS
 // =========================================================================
-
-#ifndef SEG_DATA_CONST
-#define SEG_DATA_CONST "__DATA_CONST"
-#endif
-#ifndef SEG_AUTH_CONST
-#define SEG_AUTH_CONST "__AUTH_CONST"
-#endif
-#ifndef SEG_AUTH
-#define SEG_AUTH "__AUTH"
-#endif
 
 struct rebinding {
     const char *name;
@@ -1529,13 +1542,19 @@ static void InitEasyComixGeminiHook(void) {
     // 5. Đăng ký NSURLProtocol
     [NSURLProtocol registerClass:[EasyComixGeminiURLProtocol class]];
     
-    // 6. Swizzle các hàm tạo session configuration
+    // 6. Swizzle các hàm tạo session configuration & session instance
     SwizzleClassMethod([NSURLSessionConfiguration class],
                        @selector(defaultSessionConfiguration),
                        @selector(ec_defaultSessionConfiguration));
     SwizzleClassMethod([NSURLSessionConfiguration class],
                        @selector(ephemeralSessionConfiguration),
                        @selector(ec_ephemeralSessionConfiguration));
+    SwizzleClassMethod([NSURLSession class],
+                       @selector(sessionWithConfiguration:delegate:delegateQueue:),
+                       @selector(ec_sessionWithConfiguration:delegate:delegateQueue:));
+    SwizzleClassMethod([NSURLSession class],
+                       @selector(sessionWithConfiguration:),
+                       @selector(ec_sessionWithConfiguration:));
                   
     // 7. Gắn nút cài đặt nổi trên UI & Tự động đóng modal chặn
     SwizzleMethod([UIViewController class],
