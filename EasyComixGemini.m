@@ -1314,6 +1314,16 @@ static void HookRevenueCatClasses(void) {
 // FISHHOOK: REBIND DYNAMIC SYMBOLS CHO CRYPTOKIT & ANTI-TAMPER BYPASS
 // =========================================================================
 
+#ifndef SEG_DATA_CONST
+#define SEG_DATA_CONST "__DATA_CONST"
+#endif
+#ifndef SEG_AUTH_CONST
+#define SEG_AUTH_CONST "__AUTH_CONST"
+#endif
+#ifndef SEG_AUTH
+#define SEG_AUTH "__AUTH"
+#endif
+
 struct rebinding {
     const char *name;
     void *replacement;
