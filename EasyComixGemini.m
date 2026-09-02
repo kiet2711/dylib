@@ -973,18 +973,38 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
     return request;
 }
 
+static NSString *const kMockEd25519SignatureBase64 = @"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
+static NSString *GetRequestSignatureNonce(NSURLRequest *request) {
+    if (!request) return @"";
+    NSString *nonce = [request valueForHTTPHeaderField:@"X-Signature-Nonce"];
+    if (nonce.length > 0) return nonce;
+    for (NSString *key in [request.allHTTPHeaderFields allKeys]) {
+        if ([key caseInsensitiveCompare:@"X-Signature-Nonce"] == NSOrderedSame) {
+            return request.allHTTPHeaderFields[key];
+        }
+    }
+    return @"";
+}
+
 - (void)finishWithJSONObject:(NSDictionary *)object {
     if (self.ecStopped) return;
     NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
+    
+    NSString *reqNonce = GetRequestSignatureNonce(self.request);
+    NSMutableDictionary *headers = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"Content-Type": @"application/json; charset=utf-8",
+        @"Access-Control-Allow-Origin": @"*",
+        @"X-Signature": kMockEd25519SignatureBase64
+    }];
+    if (reqNonce.length > 0) {
+        headers[@"X-Signature-Nonce"] = reqNonce;
+    }
+    
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL
                                                               statusCode:200
                                                              HTTPVersion:@"HTTP/1.1"
-                                                            headerFields:@{
-                                                                @"Content-Type": @"application/json; charset=utf-8",
-                                                                @"Access-Control-Allow-Origin": @"*",
-                                                                @"X-Signature-Nonce": @"gemini-pro-mock-nonce",
-                                                                @"X-Signature": @"gemini-pro-mock-signature"
-                                                            }];
+                                                            headerFields:headers];
     [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
     [self.client URLProtocol:self didLoadData:data];
     [self.client URLProtocolDidFinishLoading:self];
@@ -993,15 +1013,21 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
 - (void)finishWithJSONArray:(NSArray *)array {
     if (self.ecStopped) return;
     NSData *data = [NSJSONSerialization dataWithJSONObject:array options:0 error:nil];
+    
+    NSString *reqNonce = GetRequestSignatureNonce(self.request);
+    NSMutableDictionary *headers = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"Content-Type": @"application/json; charset=utf-8",
+        @"Access-Control-Allow-Origin": @"*",
+        @"X-Signature": kMockEd25519SignatureBase64
+    }];
+    if (reqNonce.length > 0) {
+        headers[@"X-Signature-Nonce"] = reqNonce;
+    }
+    
     NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL
                                                               statusCode:200
                                                              HTTPVersion:@"HTTP/1.1"
-                                                            headerFields:@{
-                                                                @"Content-Type": @"application/json; charset=utf-8",
-                                                                @"Access-Control-Allow-Origin": @"*",
-                                                                @"X-Signature-Nonce": @"gemini-pro-mock-nonce",
-                                                                @"X-Signature": @"gemini-pro-mock-signature"
-                                                            }];
+                                                            headerFields:headers];
     [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
     [self.client URLProtocol:self didLoadData:data];
     [self.client URLProtocolDidFinishLoading:self];
@@ -1313,16 +1339,6 @@ static void HookRevenueCatClasses(void) {
 // =========================================================================
 // FISHHOOK: REBIND DYNAMIC SYMBOLS CHO CRYPTOKIT & ANTI-TAMPER BYPASS
 // =========================================================================
-
-#ifndef SEG_DATA_CONST
-#define SEG_DATA_CONST "__DATA_CONST"
-#endif
-#ifndef SEG_AUTH_CONST
-#define SEG_AUTH_CONST "__AUTH_CONST"
-#endif
-#ifndef SEG_AUTH
-#define SEG_AUTH "__AUTH"
-#endif
 
 struct rebinding {
     const char *name;
