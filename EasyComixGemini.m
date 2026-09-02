@@ -9,6 +9,16 @@
 #import <sys/mman.h>
 #import <dlfcn.h>
 
+#ifndef SEG_DATA_CONST
+#define SEG_DATA_CONST "__DATA_CONST"
+#endif
+#ifndef SEG_AUTH_CONST
+#define SEG_AUTH_CONST "__AUTH_CONST"
+#endif
+#ifndef SEG_AUTH
+#define SEG_AUTH "__AUTH"
+#endif
+
 /**
  * EasyComix Gemini Tweak (Dylib)
  * - Chặn toàn diện 100% request dịch (Dịch Classic Chapter & Dịch Live Scroll/Paged) chuyển qua Gemini API
@@ -1339,6 +1349,16 @@ static void HookRevenueCatClasses(void) {
 // =========================================================================
 // FISHHOOK: REBIND DYNAMIC SYMBOLS CHO CRYPTOKIT & ANTI-TAMPER BYPASS
 // =========================================================================
+
+#ifndef SEG_DATA_CONST
+#define SEG_DATA_CONST "__DATA_CONST"
+#endif
+#ifndef SEG_AUTH_CONST
+#define SEG_AUTH_CONST "__AUTH_CONST"
+#endif
+#ifndef SEG_AUTH
+#define SEG_AUTH "__AUTH"
+#endif
 
 struct rebinding {
     const char *name;
