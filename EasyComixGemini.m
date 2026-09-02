@@ -9,16 +9,6 @@
 #import <sys/mman.h>
 #import <dlfcn.h>
 
-#ifndef SEG_DATA_CONST
-#define SEG_DATA_CONST "__DATA_CONST"
-#endif
-#ifndef SEG_AUTH_CONST
-#define SEG_AUTH_CONST "__AUTH_CONST"
-#endif
-#ifndef SEG_AUTH
-#define SEG_AUTH "__AUTH"
-#endif
-
 /**
  * EasyComix Gemini Tweak (Dylib)
  * - Chặn toàn diện 100% request dịch (Dịch Classic Chapter & Dịch Live Scroll/Paged) chuyển qua Gemini API
@@ -1350,16 +1340,6 @@ static void HookRevenueCatClasses(void) {
 // FISHHOOK: REBIND DYNAMIC SYMBOLS CHO CRYPTOKIT & ANTI-TAMPER BYPASS
 // =========================================================================
 
-#ifndef SEG_DATA_CONST
-#define SEG_DATA_CONST "__DATA_CONST"
-#endif
-#ifndef SEG_AUTH_CONST
-#define SEG_AUTH_CONST "__AUTH_CONST"
-#endif
-#ifndef SEG_AUTH
-#define SEG_AUTH "__AUTH"
-#endif
-
 struct rebinding {
     const char *name;
     void *replacement;
@@ -1419,8 +1399,22 @@ static void perform_rebinding_with_section(struct rebindings_entry *rebindings,
                                            uint32_t *indirect_symtab) {
     uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
     void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
-    vm_prot_t oldProt = get_protection(indirect_symbol_bindings);
-    mprotect(indirect_symbol_bindings, section->size, PROT_READ | PROT_WRITE);
+    
+    size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    if (page_size == 0) page_size = 16384;
+    
+    uintptr_t start_addr = (uintptr_t)indirect_symbol_bindings;
+    uintptr_t end_addr = start_addr + section->size;
+    uintptr_t page_start = start_addr & ~(page_size - 1);
+    uintptr_t page_end = (end_addr + page_size - 1) & ~(page_size - 1);
+    size_t page_len = page_end - page_start;
+    
+    vm_prot_t oldProt = get_protection((void *)page_start);
+    kern_return_t kr = vm_protect(mach_task_self(), (vm_address_t)page_start, (vm_size_t)page_len, 0, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    if (kr != KERN_SUCCESS) {
+        mprotect((void *)page_start, page_len, PROT_READ | PROT_WRITE);
+    }
+    
     for (uint32_t i = 0; i < section->size / sizeof(void *); i++) {
         uint32_t symtab_index = indirect_symbol_indices[i];
         if (symtab_index == INDIRECT_SYMBOL_ABS || symtab_index == INDIRECT_SYMBOL_LOCAL ||
@@ -1441,6 +1435,7 @@ static void perform_rebinding_with_section(struct rebindings_entry *rebindings,
                         *(cur->rebindings[j].replaced) = indirect_symbol_bindings[i];
                     }
                     indirect_symbol_bindings[i] = cur->rebindings[j].replacement;
+                    LOG(@"[Fishhook] Đã rebind symbol thành công: %s -> %p", symbol_name, cur->rebindings[j].replacement);
                     goto symbol_loop;
                 }
             }
@@ -1448,7 +1443,8 @@ static void perform_rebinding_with_section(struct rebindings_entry *rebindings,
         }
     symbol_loop:;
     }
-    mprotect(indirect_symbol_bindings, section->size, oldProt);
+    
+    vm_protect(mach_task_self(), (vm_address_t)page_start, (vm_size_t)page_len, 0, oldProt);
 }
 
 static void rebind_symbols_for_image(struct rebindings_entry *rebindings,
@@ -1537,6 +1533,11 @@ static bool Hook_AlwaysValidSignature(void) {
     return true;
 }
 
+static Boolean Hook_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef signedData, CFDataRef signature, CFErrorRef *error) {
+    LOG(@"Đã bypass SecKeyVerifySignature -> trả về true!");
+    return true;
+}
+
 // =========================================================================
 // KHỞI TẠO TWEAK: GỠ BỎ GIỚI HẠN & KÍCH HOẠT PRO VĨNH VIỄN
 // =========================================================================
@@ -1545,7 +1546,7 @@ __attribute__((constructor))
 static void InitEasyComixGeminiHook(void) {
     LOG(@"EasyComix Gemini PRO Hook initialized. Model: %@", GetSavedGeminiModel());
     
-    // 1. Bypass kiểm tra chữ ký CryptoKit (Ed25519) trong EasyComix 1.0.23
+    // 1. Bypass kiểm tra chữ ký CryptoKit (Ed25519) và Security Framework trong EasyComix 1.0.23
     struct rebinding rebindings[] = {
         {
             "$s9CryptoKit10Curve25519O7SigningO9PublicKeyV16isValidSignature_3forSbx_q_t10Foundation12DataProtocolRzAjKR_r0_lF",
@@ -1556,10 +1557,20 @@ static void InitEasyComixGeminiHook(void) {
             "_$s9CryptoKit10Curve25519O7SigningO9PublicKeyV16isValidSignature_3forSbx_q_t10Foundation12DataProtocolRzAjKR_r0_lF",
             (void *)Hook_AlwaysValidSignature,
             NULL
+        },
+        {
+            "SecKeyVerifySignature",
+            (void *)Hook_SecKeyVerifySignature,
+            NULL
+        },
+        {
+            "_SecKeyVerifySignature",
+            (void *)Hook_SecKeyVerifySignature,
+            NULL
         }
     };
-    rebind_symbols(rebindings, 2);
-    LOG(@"Đã kích hoạt bypass kiểm tra chữ ký CryptoKit (Curve25519)");
+    rebind_symbols(rebindings, 4);
+    LOG(@"Đã kích hoạt bypass kiểm tra chữ ký CryptoKit & SecKeyVerifySignature");
 
     // 2. Tự động xóa cache hạn mức cũ trong UserDefaults của app
     NSDictionary *defaultsDict = [[NSUserDefaults standardUserDefaults] dictionaryRepresentation];
