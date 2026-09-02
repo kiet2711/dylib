@@ -1348,206 +1348,96 @@ static void HookRevenueCatClasses(void) {
     }
 }
 
+
 // =========================================================================
-// FISHHOOK: REBIND DYNAMIC SYMBOLS CHO CRYPTOKIT & ANTI-TAMPER BYPASS
+// DIRECT GOT PATCHING: Bypass CryptoKit isValidSignature (Ed25519)
+// =========================================================================
+// EasyComix 1.0.23 sử dụng LC_DYLD_CHAINED_FIXUPS (iOS 15+ / Xcode 14+)
+// khiến indirect symbol table rỗng (nindirectsyms=0).
+// Fishhook KHÔNG THỂ hoạt động vì nó dựa vào bảng này.
+// Giải pháp: ghi trực tiếp vào GOT entry tại địa chỉ ảo đã biết.
+//
+// Stub CryptoKit isValidSignature:
+//   0x10040bef4: adrp x16, #0x100516000
+//   0x10040bef8: ldr  x16, [x16, #0xaa8]
+//   0x10040befc: br   x16
+// GOT entry: virtual 0x100516aa8 (trong __DATA_CONST,__got)
 // =========================================================================
 
-struct rebinding {
-    const char *name;
-    void *replacement;
-    void **replaced;
-};
-
-struct rebindings_entry {
-    struct rebinding *rebindings;
-    size_t rebindings_nel;
-    struct rebindings_entry *next;
-};
-
-static struct rebindings_entry *_rebindings_head;
-
-static int prepend_rebindings(struct rebindings_entry **rebindings_head,
-                              struct rebinding rebindings[],
-                              size_t nel) {
-    struct rebindings_entry *new_entry = (struct rebindings_entry *)malloc(sizeof(struct rebindings_entry));
-    if (!new_entry) return -1;
-    new_entry->rebindings = (struct rebinding *)malloc(sizeof(struct rebinding) * nel);
-    if (!new_entry->rebindings) {
-        free(new_entry);
-        return -1;
-    }
-    memcpy(new_entry->rebindings, rebindings, sizeof(struct rebinding) * nel);
-    new_entry->rebindings_nel = nel;
-    new_entry->next = *rebindings_head;
-    *rebindings_head = new_entry;
-    return 0;
+// Hook function: luôn trả về true (1) cho isValidSignature
+// ARM64 calling convention: return value trong w0
+static bool Hook_CryptoKit_isValidSignature(void) {
+    return true;
 }
 
-static vm_prot_t get_protection(void *sectionStart) {
-    mach_port_t task = mach_task_self();
-    vm_size_t size = 0;
-    vm_address_t address = (vm_address_t)sectionStart;
-    memory_object_name_t object;
-#if __LP64__
-    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-    vm_region_basic_info_data_64_t info;
-    kern_return_t kr = vm_region_64(task, &address, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object);
-#else
-    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT;
-    vm_region_basic_info_data_t info;
-    kern_return_t kr = vm_region(task, &address, &size, VM_REGION_BASIC_INFO, (vm_region_info_t)&info, &count, &object);
-#endif
-    if (kr != KERN_SUCCESS) {
-        return VM_PROT_READ | VM_PROT_WRITE;
-    }
-    return info.protection;
-}
+// Địa chỉ ảo (virtual address) của GOT entry cho isValidSignature
+// Được trích xuất từ stub tại 0x10040bef4 trong Mach-O binary
+#define CRYPTOKIT_ISVALIDSIGNATURE_GOT_VA 0x100516aa8ULL
 
-static void perform_rebinding_with_section(struct rebindings_entry *rebindings,
-                                           struct section_64 *section,
-                                           intptr_t slide,
-                                           struct nlist_64 *symtab,
-                                           char *strtab,
-                                           uint32_t *indirect_symtab) {
-    uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
-    void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
+static void PatchGOTEntry(uintptr_t got_virtual_addr, void *new_func_ptr) {
+    // Tìm main executable image (index 0 = dyld, thường main app là image chứa đường dẫn app)
+    uint32_t image_count = _dyld_image_count();
+    intptr_t slide = 0;
+    BOOL found = NO;
     
+    for (uint32_t i = 0; i < image_count; i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (name && strstr(name, "EasyComix")) {
+            slide = _dyld_get_image_vmaddr_slide(i);
+            found = YES;
+            LOG(@"[GOT Patch] Tìm thấy EasyComix image tại index %u, ASLR slide = 0x%lx", i, (unsigned long)slide);
+            break;
+        }
+    }
+    
+    if (!found) {
+        // Fallback: thử image index 0 (thường là main executable)
+        slide = _dyld_get_image_vmaddr_slide(0);
+        LOG(@"[GOT Patch] Không tìm thấy EasyComix image, dùng slide index 0 = 0x%lx", (unsigned long)slide);
+    }
+    
+    // Tính địa chỉ runtime của GOT entry
+    void **got_entry_ptr = (void **)(got_virtual_addr + (uintptr_t)slide);
+    
+    // Căn chỉnh theo page boundary (16KB trên iOS ARM64)
     size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
     if (page_size == 0) page_size = 16384;
     
-    uintptr_t start_addr = (uintptr_t)indirect_symbol_bindings;
-    uintptr_t end_addr = start_addr + section->size;
-    uintptr_t page_start = start_addr & ~(page_size - 1);
-    uintptr_t page_end = (end_addr + page_size - 1) & ~(page_size - 1);
-    size_t page_len = page_end - page_start;
+    uintptr_t page_start = (uintptr_t)got_entry_ptr & ~(page_size - 1);
+    size_t page_len = page_size * 2; // Bao phủ 2 page đề phòng entry nằm giữa ranh giới
     
-    vm_prot_t oldProt = get_protection((void *)page_start);
-    kern_return_t kr = vm_protect(mach_task_self(), (vm_address_t)page_start, (vm_size_t)page_len, 0, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    // Mở khóa bộ nhớ __DATA_CONST bằng vm_protect + VM_PROT_COPY
+    kern_return_t kr = vm_protect(
+        mach_task_self(),
+        (vm_address_t)page_start,
+        (vm_size_t)page_len,
+        0,
+        VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY
+    );
+    
     if (kr != KERN_SUCCESS) {
-        mprotect((void *)page_start, page_len, PROT_READ | PROT_WRITE);
+        LOG(@"[GOT Patch] vm_protect FAILED (kr=%d), thử mprotect fallback...", kr);
+        int mp = mprotect((void *)page_start, page_len, PROT_READ | PROT_WRITE);
+        if (mp != 0) {
+            LOG(@"[GOT Patch] mprotect cũng FAILED (errno=%d). Không thể patch GOT!", errno);
+            return;
+        }
     }
     
-    for (uint32_t i = 0; i < section->size / sizeof(void *); i++) {
-        uint32_t symtab_index = indirect_symbol_indices[i];
-        if (symtab_index == INDIRECT_SYMBOL_ABS || symtab_index == INDIRECT_SYMBOL_LOCAL ||
-            symtab_index == (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) {
-            continue;
-        }
-        uint32_t strtab_offset = symtab[symtab_index].n_un.n_strx;
-        char *symbol_name = strtab + strtab_offset;
-        bool symbol_name_longer_than_1 = symbol_name[0] && symbol_name[1];
-        struct rebindings_entry *cur = rebindings;
-        while (cur) {
-            for (uint32_t j = 0; j < cur->rebindings_nel; j++) {
-                if (symbol_name_longer_than_1 &&
-                    (strcmp(&symbol_name[1], cur->rebindings[j].name) == 0 ||
-                     strcmp(symbol_name, cur->rebindings[j].name) == 0)) {
-                    if (cur->rebindings[j].replaced != NULL &&
-                        indirect_symbol_bindings[i] != cur->rebindings[j].replacement) {
-                        *(cur->rebindings[j].replaced) = indirect_symbol_bindings[i];
-                    }
-                    indirect_symbol_bindings[i] = cur->rebindings[j].replacement;
-                    LOG(@"[Fishhook] Đã rebind symbol thành công: %s -> %p", symbol_name, cur->rebindings[j].replacement);
-                    goto symbol_loop;
-                }
-            }
-            cur = cur->next;
-        }
-    symbol_loop:;
-    }
+    // Lưu giá trị cũ và ghi đè bằng hook function
+    void *old_value = *got_entry_ptr;
+    *got_entry_ptr = new_func_ptr;
     
-    vm_protect(mach_task_self(), (vm_address_t)page_start, (vm_size_t)page_len, 0, oldProt);
-}
-
-static void rebind_symbols_for_image(struct rebindings_entry *rebindings,
-                                     const struct mach_header *header,
-                                     intptr_t slide) {
-    Dl_info info;
-    if (dladdr(header, &info) == 0) return;
-
-    struct segment_command_64 *cur_seg_cmd;
-    struct segment_command_64 *linkedit_segment = NULL;
-    struct symtab_command *symtab_cmd = NULL;
-    struct dysymtab_command *dysymtab_cmd = NULL;
-
-    uintptr_t cur = (uintptr_t)header + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < header->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)cur;
-        if (lc->cmd == LC_SEGMENT_64) {
-            cur_seg_cmd = (struct segment_command_64 *)cur;
-            if (strcmp(cur_seg_cmd->segname, SEG_LINKEDIT) == 0) {
-                linkedit_segment = cur_seg_cmd;
-            }
-        } else if (lc->cmd == LC_SYMTAB) {
-            symtab_cmd = (struct symtab_command *)cur;
-        } else if (lc->cmd == LC_DYSYMTAB) {
-            dysymtab_cmd = (struct dysymtab_command *)cur;
-        }
-        cur += lc->cmdsize;
-    }
-
-    if (!symtab_cmd || !dysymtab_cmd || !linkedit_segment || !dysymtab_cmd->nindirectsyms) {
-        return;
-    }
-
-    uintptr_t linkedit_base = (uintptr_t)slide + linkedit_segment->vmaddr - linkedit_segment->fileoff;
-    struct nlist_64 *symtab = (struct nlist_64 *)(linkedit_base + symtab_cmd->symoff);
-    char *strtab = (char *)(linkedit_base + symtab_cmd->stroff);
-    uint32_t *indirect_symtab = (uint32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
-
-    cur = (uintptr_t)header + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < header->ncmds; i++) {
-        struct load_command *lc = (struct load_command *)cur;
-        if (lc->cmd == LC_SEGMENT_64) {
-            cur_seg_cmd = (struct segment_command_64 *)cur;
-            if (strcmp(cur_seg_cmd->segname, SEG_DATA) != 0 &&
-                strcmp(cur_seg_cmd->segname, SEG_DATA_CONST) != 0 &&
-                strcmp(cur_seg_cmd->segname, "__AUTH_CONST") != 0 &&
-                strcmp(cur_seg_cmd->segname, "__AUTH") != 0) {
-                cur += lc->cmdsize;
-                continue;
-            }
-            for (uint32_t j = 0; j < cur_seg_cmd->nsects; j++) {
-                struct section_64 *sect =
-                    (struct section_64 *)(cur + sizeof(struct segment_command_64)) + j;
-                uint32_t section_type = sect->flags & SECTION_TYPE;
-                if (section_type == S_LAZY_SYMBOL_POINTERS ||
-                    section_type == S_NON_LAZY_SYMBOL_POINTERS) {
-                    perform_rebinding_with_section(rebindings, sect, slide, symtab, strtab, indirect_symtab);
-                }
-            }
-        }
-        cur += lc->cmdsize;
-    }
-}
-
-static void _rebind_symbols_for_image(const struct mach_header *header,
-                                      intptr_t slide) {
-    rebind_symbols_for_image(_rebindings_head, header, slide);
-}
-
-static int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) {
-    int retval = prepend_rebindings(&_rebindings_head, rebindings, rebindings_nel);
-    if (retval < 0) return retval;
-    if (!_rebindings_head->next) {
-        _dyld_register_func_for_add_image(_rebind_symbols_for_image);
-    } else {
-        uint32_t c = _dyld_image_count();
-        for (uint32_t i = 0; i < c; i++) {
-            _rebind_symbols_for_image(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i));
-        }
-    }
-    return retval;
-}
-
-static bool Hook_AlwaysValidSignature(void) {
-    LOG(@"Đã bypass CryptoKit isValidSignature -> trả về true!");
-    return true;
-}
-
-static Boolean Hook_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef signedData, CFDataRef signature, CFErrorRef *error) {
-    LOG(@"Đã bypass SecKeyVerifySignature -> trả về true!");
-    return true;
+    // Khôi phục quyền truy cập (read-only)
+    vm_protect(
+        mach_task_self(),
+        (vm_address_t)page_start,
+        (vm_size_t)page_len,
+        0,
+        VM_PROT_READ
+    );
+    
+    LOG(@"[GOT Patch] Đã patch GOT tại %p: %p -> %p", got_entry_ptr, old_value, new_func_ptr);
 }
 
 // =========================================================================
@@ -1558,31 +1448,11 @@ __attribute__((constructor))
 static void InitEasyComixGeminiHook(void) {
     LOG(@"EasyComix Gemini PRO Hook initialized. Model: %@", GetSavedGeminiModel());
     
-    // 1. Bypass kiểm tra chữ ký CryptoKit (Ed25519) và Security Framework trong EasyComix 1.0.23
-    struct rebinding rebindings[] = {
-        {
-            "$s9CryptoKit10Curve25519O7SigningO9PublicKeyV16isValidSignature_3forSbx_q_t10Foundation12DataProtocolRzAjKR_r0_lF",
-            (void *)Hook_AlwaysValidSignature,
-            NULL
-        },
-        {
-            "_$s9CryptoKit10Curve25519O7SigningO9PublicKeyV16isValidSignature_3forSbx_q_t10Foundation12DataProtocolRzAjKR_r0_lF",
-            (void *)Hook_AlwaysValidSignature,
-            NULL
-        },
-        {
-            "SecKeyVerifySignature",
-            (void *)Hook_SecKeyVerifySignature,
-            NULL
-        },
-        {
-            "_SecKeyVerifySignature",
-            (void *)Hook_SecKeyVerifySignature,
-            NULL
-        }
-    };
-    rebind_symbols(rebindings, 4);
-    LOG(@"Đã kích hoạt bypass kiểm tra chữ ký CryptoKit & SecKeyVerifySignature");
+    // 1. BYPASS CHỮ KÝ ED25519: Patch trực tiếp GOT entry của CryptoKit isValidSignature
+    //    Binary 1.0.23 dùng LC_DYLD_CHAINED_FIXUPS -> fishhook không hoạt động
+    //    Phải ghi trực tiếp vào GOT entry tại virtual address 0x100516aa8
+    PatchGOTEntry(CRYPTOKIT_ISVALIDSIGNATURE_GOT_VA, (void *)Hook_CryptoKit_isValidSignature);
+    LOG(@"Đã bypass CryptoKit isValidSignature bằng Direct GOT Patch");
 
     // 2. Tự động xóa cache hạn mức cũ trong UserDefaults của app
     NSDictionary *defaultsDict = [[NSUserDefaults standardUserDefaults] dictionaryRepresentation];
