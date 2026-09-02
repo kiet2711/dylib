@@ -2,6 +2,12 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
+#import <mach-o/dyld.h>
+#import <mach-o/loader.h>
+#import <mach-o/nlist.h>
+#import <mach/mach.h>
+#import <sys/mman.h>
+#import <dlfcn.h>
 
 /**
  * EasyComix Gemini Tweak (Dylib)
@@ -975,7 +981,9 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
                                                              HTTPVersion:@"HTTP/1.1"
                                                             headerFields:@{
                                                                 @"Content-Type": @"application/json; charset=utf-8",
-                                                                @"Access-Control-Allow-Origin": @"*"
+                                                                @"Access-Control-Allow-Origin": @"*",
+                                                                @"X-Signature-Nonce": @"gemini-pro-mock-nonce",
+                                                                @"X-Signature": @"gemini-pro-mock-signature"
                                                             }];
     [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
     [self.client URLProtocol:self didLoadData:data];
@@ -990,7 +998,9 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
                                                              HTTPVersion:@"HTTP/1.1"
                                                             headerFields:@{
                                                                 @"Content-Type": @"application/json; charset=utf-8",
-                                                                @"Access-Control-Allow-Origin": @"*"
+                                                                @"Access-Control-Allow-Origin": @"*",
+                                                                @"X-Signature-Nonce": @"gemini-pro-mock-nonce",
+                                                                @"X-Signature": @"gemini-pro-mock-signature"
                                                             }];
     [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
     [self.client URLProtocol:self didLoadData:data];
@@ -1053,7 +1063,19 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
         return;
     }
 
-    // 5. Quy tắc chặn quảng cáo (Ad Rules)
+    // 5. Site Support (Bản 1.0.23 mới)
+    if ([path isEqualToString:@"/api/v1/config/site-support"]) {
+        [self finishWithJSONObject:@{
+            @"success": @YES,
+            @"data": @{
+                @"version": @1,
+                @"unsupportedDomains": @[]
+            }
+        }];
+        return;
+    }
+
+    // 6. Quy tắc chặn quảng cáo (Ad Rules)
     if ([path isEqualToString:@"/api/v1/config/ad-rules"]) {
         [self finishWithJSONObject:@{
             @"success": @YES,
@@ -1065,8 +1087,31 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
         return;
     }
 
-    // 6. Sự kiện ghé thăm trang (Events)
-    if ([path containsString:@"/events/"]) {
+    // 7. Whitelist & App Version Config
+    if ([path containsString:@"/whitelist"] || [path containsString:@"/config/app-whitelist"]) {
+        [self finishWithJSONObject:@{
+            @"success": @YES,
+            @"data": @{
+                @"emails": @[ @"geminipro@easycomix.app" ]
+            }
+        }];
+        return;
+    }
+
+    if ([path containsString:@"/app-version"] || [path containsString:@"/config/app-version"]) {
+        [self finishWithJSONObject:@{
+            @"success": @YES,
+            @"data": @{
+                @"minVersion": @"1.0.0",
+                @"latestVersion": @"1.0.23",
+                @"whatsNew": @"EasyComix Gemini PRO Enabled"
+            }
+        }];
+        return;
+    }
+
+    // 8. Sự kiện ghé thăm trang & phản hồi (Events / Feedback)
+    if ([path containsString:@"/events/"] || [path containsString:@"/feedback"]) {
         [self finishWithJSONObject:@{
             @"success": @YES,
             @"data": @{}
@@ -1074,7 +1119,7 @@ static BOOL IsGeminiInterceptRequest(NSURLRequest *request) {
         return;
     }
 
-    // 7. Endpoint dịch thuật (/api/v1/translate, /api/v1/translate/chapter,...)
+    // 9. Endpoint dịch thuật (/api/v1/translate, /api/v1/translate/chapter,...)
     if ([path hasPrefix:@"/api/v1/translate"]) {
         NSData *bodyData = RequestBodyData(self.request);
         NSDictionary *payload = TranslationPayloadFromBodyData(bodyData);
@@ -1243,6 +1288,187 @@ static void HookRevenueCatClasses(void) {
 }
 
 // =========================================================================
+// FISHHOOK: REBIND DYNAMIC SYMBOLS CHO CRYPTOKIT & ANTI-TAMPER BYPASS
+// =========================================================================
+
+struct rebinding {
+    const char *name;
+    void *replacement;
+    void **replaced;
+};
+
+struct rebindings_entry {
+    struct rebinding *rebindings;
+    size_t rebindings_nel;
+    struct rebindings_entry *next;
+};
+
+static struct rebindings_entry *_rebindings_head;
+
+static int prepend_rebindings(struct rebindings_entry **rebindings_head,
+                              struct rebinding rebindings[],
+                              size_t nel) {
+    struct rebindings_entry *new_entry = (struct rebindings_entry *)malloc(sizeof(struct rebindings_entry));
+    if (!new_entry) return -1;
+    new_entry->rebindings = (struct rebinding *)malloc(sizeof(struct rebinding) * nel);
+    if (!new_entry->rebindings) {
+        free(new_entry);
+        return -1;
+    }
+    memcpy(new_entry->rebindings, rebindings, sizeof(struct rebinding) * nel);
+    new_entry->rebindings_nel = nel;
+    new_entry->next = *rebindings_head;
+    *rebindings_head = new_entry;
+    return 0;
+}
+
+static vm_prot_t get_protection(void *sectionStart) {
+    mach_port_t task = mach_task_self();
+    vm_size_t size = 0;
+    vm_address_t address = (vm_address_t)sectionStart;
+    memory_object_name_t object;
+#if __LP64__
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    vm_region_basic_info_data_64_t info;
+    kern_return_t kr = vm_region_64(task, &address, &size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object);
+#else
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT;
+    vm_region_basic_info_data_t info;
+    kern_return_t kr = vm_region(task, &address, &size, VM_REGION_BASIC_INFO, (vm_region_info_t)&info, &count, &object);
+#endif
+    if (kr != KERN_SUCCESS) {
+        return VM_PROT_READ | VM_PROT_WRITE;
+    }
+    return info.protection;
+}
+
+static void perform_rebinding_with_section(struct rebindings_entry *rebindings,
+                                           struct section_64 *section,
+                                           intptr_t slide,
+                                           struct nlist_64 *symtab,
+                                           char *strtab,
+                                           uint32_t *indirect_symtab) {
+    uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
+    void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
+    vm_prot_t oldProt = get_protection(indirect_symbol_bindings);
+    mprotect(indirect_symbol_bindings, section->size, PROT_READ | PROT_WRITE);
+    for (uint32_t i = 0; i < section->size / sizeof(void *); i++) {
+        uint32_t symtab_index = indirect_symbol_indices[i];
+        if (symtab_index == INDIRECT_SYMBOL_ABS || symtab_index == INDIRECT_SYMBOL_LOCAL ||
+            symtab_index == (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) {
+            continue;
+        }
+        uint32_t strtab_offset = symtab[symtab_index].n_un.n_strx;
+        char *symbol_name = strtab + strtab_offset;
+        bool symbol_name_longer_than_1 = symbol_name[0] && symbol_name[1];
+        struct rebindings_entry *cur = rebindings;
+        while (cur) {
+            for (uint32_t j = 0; j < cur->rebindings_nel; j++) {
+                if (symbol_name_longer_than_1 &&
+                    (strcmp(&symbol_name[1], cur->rebindings[j].name) == 0 ||
+                     strcmp(symbol_name, cur->rebindings[j].name) == 0)) {
+                    if (cur->rebindings[j].replaced != NULL &&
+                        indirect_symbol_bindings[i] != cur->rebindings[j].replacement) {
+                        *(cur->rebindings[j].replaced) = indirect_symbol_bindings[i];
+                    }
+                    indirect_symbol_bindings[i] = cur->rebindings[j].replacement;
+                    goto symbol_loop;
+                }
+            }
+            cur = cur->next;
+        }
+    symbol_loop:;
+    }
+    mprotect(indirect_symbol_bindings, section->size, oldProt);
+}
+
+static void rebind_symbols_for_image(struct rebindings_entry *rebindings,
+                                     const struct mach_header *header,
+                                     intptr_t slide) {
+    Dl_info info;
+    if (dladdr(header, &info) == 0) return;
+
+    struct segment_command_64 *cur_seg_cmd;
+    struct segment_command_64 *linkedit_segment = NULL;
+    struct symtab_command *symtab_cmd = NULL;
+    struct dysymtab_command *dysymtab_cmd = NULL;
+
+    uintptr_t cur = (uintptr_t)header + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < header->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)cur;
+        if (lc->cmd == LC_SEGMENT_64) {
+            cur_seg_cmd = (struct segment_command_64 *)cur;
+            if (strcmp(cur_seg_cmd->segname, SEG_LINKEDIT) == 0) {
+                linkedit_segment = cur_seg_cmd;
+            }
+        } else if (lc->cmd == LC_SYMTAB) {
+            symtab_cmd = (struct symtab_command *)cur;
+        } else if (lc->cmd == LC_DYSYMTAB) {
+            dysymtab_cmd = (struct dysymtab_command *)cur;
+        }
+        cur += lc->cmdsize;
+    }
+
+    if (!symtab_cmd || !dysymtab_cmd || !linkedit_segment || !dysymtab_cmd->nindirectsyms) {
+        return;
+    }
+
+    uintptr_t linkedit_base = (uintptr_t)slide + linkedit_segment->vmaddr - linkedit_segment->fileoff;
+    struct nlist_64 *symtab = (struct nlist_64 *)(linkedit_base + symtab_cmd->symoff);
+    char *strtab = (char *)(linkedit_base + symtab_cmd->stroff);
+    uint32_t *indirect_symtab = (uint32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
+
+    cur = (uintptr_t)header + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < header->ncmds; i++) {
+        struct load_command *lc = (struct load_command *)cur;
+        if (lc->cmd == LC_SEGMENT_64) {
+            cur_seg_cmd = (struct segment_command_64 *)cur;
+            if (strcmp(cur_seg_cmd->segname, SEG_DATA) != 0 &&
+                strcmp(cur_seg_cmd->segname, SEG_DATA_CONST) != 0 &&
+                strcmp(cur_seg_cmd->segname, "__AUTH_CONST") != 0 &&
+                strcmp(cur_seg_cmd->segname, "__AUTH") != 0) {
+                cur += lc->cmdsize;
+                continue;
+            }
+            for (uint32_t j = 0; j < cur_seg_cmd->nsects; j++) {
+                struct section_64 *sect =
+                    (struct section_64 *)(cur + sizeof(struct segment_command_64)) + j;
+                uint32_t section_type = sect->flags & SECTION_TYPE;
+                if (section_type == S_LAZY_SYMBOL_POINTERS ||
+                    section_type == S_NON_LAZY_SYMBOL_POINTERS) {
+                    perform_rebinding_with_section(rebindings, sect, slide, symtab, strtab, indirect_symtab);
+                }
+            }
+        }
+        cur += lc->cmdsize;
+    }
+}
+
+static void _rebind_symbols_for_image(const struct mach_header *header,
+                                      intptr_t slide) {
+    rebind_symbols_for_image(_rebindings_head, header, slide);
+}
+
+static int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) {
+    int retval = prepend_rebindings(&_rebindings_head, rebindings, rebindings_nel);
+    if (retval < 0) return retval;
+    if (!_rebindings_head->next) {
+        _dyld_register_func_for_add_image(_rebind_symbols_for_image);
+    } else {
+        uint32_t c = _dyld_image_count();
+        for (uint32_t i = 0; i < c; i++) {
+            _rebind_symbols_for_image(_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i));
+        }
+    }
+    return retval;
+}
+
+static bool Hook_AlwaysValidSignature(void) {
+    LOG(@"Đã bypass CryptoKit isValidSignature -> trả về true!");
+    return true;
+}
+
+// =========================================================================
 // KHỞI TẠO TWEAK: GỠ BỎ GIỚI HẠN & KÍCH HOẠT PRO VĨNH VIỄN
 // =========================================================================
 
@@ -1250,7 +1476,23 @@ __attribute__((constructor))
 static void InitEasyComixGeminiHook(void) {
     LOG(@"EasyComix Gemini PRO Hook initialized. Model: %@", GetSavedGeminiModel());
     
-    // Tự động xóa cache hạn mức cũ trong UserDefaults của app
+    // 1. Bypass kiểm tra chữ ký CryptoKit (Ed25519) trong EasyComix 1.0.23
+    struct rebinding rebindings[] = {
+        {
+            "$s9CryptoKit10Curve25519O7SigningO9PublicKeyV16isValidSignature_3forSbx_q_t10Foundation12DataProtocolRzAjKR_r0_lF",
+            (void *)Hook_AlwaysValidSignature,
+            NULL
+        },
+        {
+            "_$s9CryptoKit10Curve25519O7SigningO9PublicKeyV16isValidSignature_3forSbx_q_t10Foundation12DataProtocolRzAjKR_r0_lF",
+            (void *)Hook_AlwaysValidSignature,
+            NULL
+        }
+    };
+    rebind_symbols(rebindings, 2);
+    LOG(@"Đã kích hoạt bypass kiểm tra chữ ký CryptoKit (Curve25519)");
+
+    // 2. Tự động xóa cache hạn mức cũ trong UserDefaults của app
     NSDictionary *defaultsDict = [[NSUserDefaults standardUserDefaults] dictionaryRepresentation];
     for (NSString *key in [defaultsDict allKeys]) {
         if ([key containsString:@"quota"] || [key containsString:@"Quota"] || [key containsString:@"limit"] || [key containsString:@"Tier"]) {
@@ -1259,7 +1501,7 @@ static void InitEasyComixGeminiHook(void) {
     }
     [[NSUserDefaults standardUserDefaults] synchronize];
     
-    // Xóa cache RevenueCat cũ bị lỗi verification để nạp mới
+    // 3. Xóa cache RevenueCat cũ bị lỗi verification để nạp mới
     NSUserDefaults *rcDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.revenuecat.user_defaults"];
     if (rcDefaults) {
         NSDictionary *rcDict = [rcDefaults dictionaryRepresentation];
@@ -1271,13 +1513,13 @@ static void InitEasyComixGeminiHook(void) {
         [rcDefaults synchronize];
     }
     
-    // Hook RevenueCat Runtime
+    // 4. Hook RevenueCat Runtime
     HookRevenueCatClasses();
     
-    // Đăng ký NSURLProtocol
+    // 5. Đăng ký NSURLProtocol
     [NSURLProtocol registerClass:[EasyComixGeminiURLProtocol class]];
     
-    // Swizzle các hàm tạo session configuration
+    // 6. Swizzle các hàm tạo session configuration
     SwizzleClassMethod([NSURLSessionConfiguration class],
                        @selector(defaultSessionConfiguration),
                        @selector(ec_defaultSessionConfiguration));
@@ -1285,7 +1527,7 @@ static void InitEasyComixGeminiHook(void) {
                        @selector(ephemeralSessionConfiguration),
                        @selector(ec_ephemeralSessionConfiguration));
                   
-    // Gắn nút cài đặt nổi trên UI & Tự động đóng modal chặn
+    // 7. Gắn nút cài đặt nổi trên UI & Tự động đóng modal chặn
     SwizzleMethod([UIViewController class],
                   @selector(viewDidAppear:),
                   @selector(hook_viewDidAppear:));
