@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <Security/Security.h>
 #import <objc/runtime.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
@@ -8,6 +9,17 @@
 #import <mach/mach.h>
 #import <sys/mman.h>
 #import <dlfcn.h>
+#import <unistd.h>
+
+#ifndef SEG_DATA_CONST
+#define SEG_DATA_CONST "__DATA_CONST"
+#endif
+#ifndef SEG_AUTH_CONST
+#define SEG_AUTH_CONST "__AUTH_CONST"
+#endif
+#ifndef SEG_AUTH
+#define SEG_AUTH "__AUTH"
+#endif
 
 /**
  * EasyComix Gemini Tweak (Dylib)
